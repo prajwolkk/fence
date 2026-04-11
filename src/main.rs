@@ -1,34 +1,53 @@
 use std::env;
-use std::fs::{self, OpenOptions}; // Added 'fs' to read files
-use std::io::Write;
+use std::fs::{self, OpenOptions};
+use std::io::{Write, BufRead, BufReader}; // Added 'BufRead' and 'BufReader' for efficient searching
 use chrono::Local;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        println!("❌ Usage: \n  fence \"message\" (to record)\n  fence --list (to view)");
+        println!("❌ Usage: \n  fence \"message\"\n  fence --list\n  fence --search \"keyword\"");
         return;
     }
 
     let input = &args[1];
 
-    // --- NEW LOGIC FOR PHASE 8 ---
+    // --- PHASE 8: LIST MODE ---
     if input == "--list" {
-        // Read the file content
         match fs::read_to_string("decisions.log") {
             Ok(content) => {
-                println!("\n📖 --- YOUR DECISION LOG ---");
-                println!("{}", content);
-                println!("----------------------------\n");
+                println!("\n📖 --- FULL LOG ---");
+                print!("{}", content);
             }
-            Err(_) => println!("⚠️ No log file found yet. Record something first!"),
+            Err(_) => println!("⚠️ No log file found."),
         }
-        return; // Stop here so we don't try to record "--list" as a decision
+        return;
     }
-    // -----------------------------
 
-    // The existing "Record" logic
+    // --- NEW LOGIC FOR PHASE 9: SEARCH MODE ---
+    if input == "--search" {
+        if args.len() < 3 {
+            println!("❌ Please provide a keyword: fence --search \"keyword\"");
+            return;
+        }
+        let keyword = &args[2].to_lowercase(); // Search is easier when case-insensitive
+
+        let file = fs::File::open("decisions.log").expect("Could not open log");
+        let reader = BufReader::new(file);
+
+        println!("\n🔍 --- SEARCH RESULTS FOR '{}' ---", keyword);
+        for line in reader.lines() {
+            let line_str = line.expect("Could not read line");
+            if line_str.to_lowercase().contains(keyword) {
+                println!("{}", line_str);
+            }
+        }
+        return;
+    }
+    // ------------------------------------------
+
+    // Existing "Record" logic
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mut file = OpenOptions::new()
         .create(true)
