@@ -3,3 +3,7 @@ Final test for Phase 5: Clean repository and CLI verified.
 [2026-04-11 10:25:10] Phase 4 is officially working.
 [2026-04-11 10:26:37] Testing the new read mode implementation.
 [2026-04-11 10:28:07] Decided to use BufReader for Phase 9 to improve memory efficiency.
+[2026-04-11 10:30:22] Decision: Using BufReader for search because it is memory-efficient for large files.
+[2026-04-11 11:36:39] Refactored code into clean functions for better modularity.
+[2026-04-11 11:38:46] Implemented professional CLI parsing with Clap.
+[2026-04-11 11:49:28] (kharelprajwol) Fixed the Path::new syntax error and added attribution.
