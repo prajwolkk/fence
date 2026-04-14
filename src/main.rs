@@ -226,7 +226,17 @@ fn run_init() -> Result<(), Box<dyn Error>> {
     };
 
     let mut config = FenceConfig::new(project_name, mode, notifications, team_settings);
-    config.monitored_paths = detect_monitored_paths();
+    let suggested_paths = detect_monitored_paths();
+    let suggested_text = if suggested_paths.is_empty() {
+        "".to_string()
+    } else {
+        suggested_paths.join(",")
+    };
+    let monitored_input: String = Input::new()
+        .with_prompt("Monitored paths (comma-separated)")
+        .default(suggested_text)
+        .interact_text()?;
+    config.monitored_paths = parse_tags(Some(monitored_input));
     let log_path = Path::new(&config.log_path);
 
     ensure_log_file(log_path)?;
@@ -269,7 +279,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         if let Some(platform) = git_remote_platform() {
             let setup_sentinel = Confirm::new()
                 .with_prompt(format!(
-                    "I see you're using {platform}. Would you like to set up the Sentinel to auto-generate and host your Decision Site?"
+                    "Enable Sentinel CI automation for {platform}? (Y/n)"
                 ))
                 .default(true)
                 .interact()?;
@@ -366,13 +376,18 @@ fn detect_monitored_paths() -> Vec<String> {
     let mut paths = Vec::new();
     if Path::new("Cargo.toml").exists() {
         paths.push("Cargo.toml".to_string());
+        paths.push("src".to_string());
     }
     if Path::new("pubspec.yaml").exists() {
         paths.push("pubspec.yaml".to_string());
+        paths.push("lib".to_string());
     }
     if Path::new("package.json").exists() {
         paths.push("package.json".to_string());
+        paths.push("src".to_string());
     }
+    paths.sort();
+    paths.dedup();
     paths
 }
 
