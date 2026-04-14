@@ -293,6 +293,24 @@ pub fn parse_log_line(line: &str) -> Option<DecisionEntry> {
     })
 }
 
+pub fn read_log_entries() -> Result<Vec<DecisionEntry>, io::Error> {
+    let config = load_runtime_config();
+    read_log_entries_from_path(Path::new(&config.log_path))
+}
+
+pub fn read_log_entries_from_path(path: &Path) -> Result<Vec<DecisionEntry>, io::Error> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+
+    Ok(content
+        .lines()
+        .filter_map(parse_log_line)
+        .collect::<Vec<_>>())
+}
+
 pub fn count_log_entries(path: &Path) -> Result<usize, io::Error> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,

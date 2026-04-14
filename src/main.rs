@@ -18,7 +18,7 @@ use fence::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 #[derive(Parser)]
@@ -218,8 +218,14 @@ fn run_browse() -> Result<(), Box<dyn Error>> {
 }
 
 fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), Box<dyn Error>> {
+    let entries = fence::read_log_entries()?;
+    let mut list_state = ListState::default();
+    if !entries.is_empty() {
+        list_state.select(Some(0));
+    }
+
     loop {
-        terminal.draw(|frame| draw_browse_ui(frame))?;
+        terminal.draw(|frame| draw_browse_ui(frame, &entries, &mut list_state))?;
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
@@ -233,7 +239,7 @@ fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<
     Ok(())
 }
 
-fn draw_browse_ui(frame: &mut Frame) {
+fn draw_browse_ui(frame: &mut Frame, entries: &[fence::DecisionEntry], list_state: &mut ListState) {
     let area = frame.area();
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -248,18 +254,59 @@ fn draw_browse_ui(frame: &mut Frame) {
     let list_block = Block::default().borders(Borders::ALL).title("Decisions");
     let detail_block = Block::default().borders(Borders::ALL).title("Details");
 
-    let empty_message = Paragraph::new("No decisions yet. Run `fence log` to create one.")
-        .block(list_block.clone())
-        .wrap(Wrap { trim: true });
-    frame.render_widget(empty_message, body[0]);
+    if entries.is_empty() {
+        let empty_message = Paragraph::new("No decisions yet. Run `fence log` to create one.")
+            .block(list_block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(empty_message, body[0]);
 
-    let detail_message = Paragraph::new("Select a decision to view details.")
-        .block(detail_block)
-        .wrap(Wrap { trim: true });
-    frame.render_widget(detail_message, body[1]);
+        let detail_message = Paragraph::new("Select a decision to view details.")
+            .block(detail_block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(detail_message, body[1]);
+    } else {
+        let items: Vec<ListItem> = entries
+            .iter()
+            .map(|entry| ListItem::new(format!("{} {}", entry_date(entry), entry_title(entry))))
+            .collect();
+        let list = List::new(items).block(list_block);
+        frame.render_stateful_widget(list, body[0], list_state);
+
+        let detail_message = Paragraph::new("Select a decision to view details.")
+            .block(detail_block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(detail_message, body[1]);
+    }
 
     let help = Paragraph::new("q: quit")
         .style(Style::default().fg(Color::Gray))
         .alignment(Alignment::Center);
     frame.render_widget(help, layout[1]);
+}
+
+fn entry_date(entry: &fence::DecisionEntry) -> &str {
+    entry
+        .timestamp
+        .split_whitespace()
+        .next()
+        .unwrap_or(&entry.timestamp)
+}
+
+fn entry_title(entry: &fence::DecisionEntry) -> String {
+    let title = entry.message.lines().next().unwrap_or("").trim();
+    let mut clipped = String::new();
+    let mut count = 0;
+    for ch in title.chars() {
+        if count >= 40 {
+            clipped.push_str("...");
+            break;
+        }
+        clipped.push(ch);
+        count += 1;
+    }
+    if clipped.is_empty() {
+        "<untitled>".to_string()
+    } else {
+        clipped
+    }
 }
