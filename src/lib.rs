@@ -13,6 +13,7 @@ const DEFAULT_LOG_PATH: &str = "decisions.log";
 const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
 const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"Fence: Commit blocked. Log or documentation is out of sync.\"\n  echo \"Run 'fence export' and stage the updated files.\"\n  exit 1\nfi\n";
+const SITE_TEMPLATE: &str = include_str!("site_template.html");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FenceMode {
@@ -76,7 +77,7 @@ fn default_category() -> DecisionCategory {
     DecisionCategory::General
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DecisionCategory {
     Architecture,
     Technical,
@@ -375,6 +376,18 @@ pub fn check_tracking_integrity() -> Result<(bool, TrackingStatus, TrackingStatu
 pub fn read_log_entries() -> Result<Vec<Decision>, io::Error> {
     let config = load_runtime_config();
     read_log_entries_from_path(Path::new(&config.log_path))
+}
+
+pub fn generate_site() -> Result<PathBuf, io::Error> {
+    let entries = read_log_entries()?;
+    let data = serde_json::to_string(&entries).map_err(io::Error::other)?;
+    let html = SITE_TEMPLATE.replace("__FENCE_DATA__", &data);
+
+    let output_dir = Path::new("fence-site");
+    fs::create_dir_all(output_dir)?;
+    let output_path = output_dir.join("index.html");
+    fs::write(&output_path, html)?;
+    Ok(output_path)
 }
 
 pub fn read_log_entries_from_path(path: &Path) -> Result<Vec<Decision>, io::Error> {

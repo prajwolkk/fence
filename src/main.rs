@@ -43,6 +43,7 @@ enum Commands {
     Check,
     Export,
     Browse,
+    Site,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -96,6 +97,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Browse => {
             run_browse()?;
+        }
+        Commands::Site => {
+            let path = fence::generate_site()?;
+            println!("Generated site at {}", path.display());
         }
     }
 
