@@ -40,6 +40,7 @@ enum Commands {
         #[arg(short, long)]
         tags: Option<String>,
     },
+    Amend,
     List,
     Search { keyword: String },
     Check,
@@ -76,6 +77,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let tags = parse_tags(tags);
             FenceManager::record_with_metadata(&message, category, tags)?;
             println!("🚀 Decision recorded and DECISIONS.md updated!");
+        }
+        Commands::Amend => {
+            run_amend()?;
         }
         Commands::List => {
             println!("\n📖 --- DECISION HISTORY ---");
@@ -358,6 +362,59 @@ fn prompt_custom_command_provider() -> Result<Option<NotificationsConfig>, Box<d
         webhook_url: None,
         custom_command: optional_value(custom_command),
     }))
+}
+
+fn run_amend() -> Result<(), Box<dyn Error>> {
+    let mut files = fence::read_decision_files()?;
+    if files.is_empty() {
+        println!("No decisions to amend.");
+        return Ok(());
+    }
+    let last = files.pop().expect("last decision");
+    let mut decision = last.decision;
+    let current_author = FenceManager::get_author();
+    if decision.author != current_author {
+        let proceed = Confirm::new()
+            .with_prompt("Author mismatch. Amend anyway?")
+            .default(false)
+            .interact()?;
+        if !proceed {
+            println!("Amend aborted.");
+            return Ok(());
+        }
+    }
+
+    let message: String = Input::new()
+        .with_prompt("Decision message")
+        .default(decision.message.clone())
+        .interact_text()?;
+
+    let category_index = category_index(decision.category);
+    let category_choice = Select::new()
+        .with_prompt("Category")
+        .items(category_options())
+        .default(category_index)
+        .interact()?;
+
+    let tags_default = if decision.optional_tags.is_empty() {
+        "".to_string()
+    } else {
+        decision.optional_tags.join(",")
+    };
+    let tags_input: String = Input::new()
+        .with_prompt("Tags (comma-separated)")
+        .default(tags_default)
+        .interact_text()?;
+
+    decision.message = message;
+    decision.category = category_from_index(category_choice);
+    decision.optional_tags = parse_tags(Some(tags_input));
+
+    fence::write_decision_at_path(&last.path, &decision)?;
+    fence::export_markdown()?;
+    println!("Decision amended.");
+
+    Ok(())
 }
 
 fn parse_category(value: Option<String>) -> fence::DecisionCategory {
@@ -647,5 +704,29 @@ fn category_label(category: fence::DecisionCategory) -> &'static str {
         fence::DecisionCategory::Product => "Product",
         fence::DecisionCategory::Security => "Security",
         fence::DecisionCategory::General => "General",
+    }
+}
+
+fn category_options() -> [&'static str; 5] {
+    ["Architecture", "Technical", "Product", "Security", "General"]
+}
+
+fn category_index(category: fence::DecisionCategory) -> usize {
+    match category {
+        fence::DecisionCategory::Architecture => 0,
+        fence::DecisionCategory::Technical => 1,
+        fence::DecisionCategory::Product => 2,
+        fence::DecisionCategory::Security => 3,
+        fence::DecisionCategory::General => 4,
+    }
+}
+
+fn category_from_index(index: usize) -> fence::DecisionCategory {
+    match index {
+        0 => fence::DecisionCategory::Architecture,
+        1 => fence::DecisionCategory::Technical,
+        2 => fence::DecisionCategory::Product,
+        3 => fence::DecisionCategory::Security,
+        _ => fence::DecisionCategory::General,
     }
 }
