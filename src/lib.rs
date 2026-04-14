@@ -14,6 +14,8 @@ const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
 const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"Fence: Commit blocked. Log or documentation is out of sync.\"\n  echo \"Run 'fence export' and stage the updated files.\"\n  exit 1\nfi\n";
 const SITE_TEMPLATE: &str = include_str!("site_template.html");
+const GITHUB_WORKFLOW_TEMPLATE: &str = "name: Fence Sentinel\n\non:\n  pull_request:\n  push:\n    branches: [main, master]\n\njobs:\n  fence:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions-rs/toolchain@v1\n        with:\n          toolchain: stable\n          override: true\n      - name: Fence Sentinel Check\n        run: cargo run -- sentinel check\n";
+const GITLAB_CI_TEMPLATE: &str = "stages:\n  - fence\n\nfence_sentinel:\n  stage: fence\n  image: rust:latest\n  script:\n    - cargo run -- sentinel check\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FenceMode {
@@ -412,6 +414,17 @@ pub fn generate_site() -> Result<PathBuf, io::Error> {
     let output_path = output_dir.join("index.html");
     fs::write(&output_path, html)?;
     Ok(output_path)
+}
+
+pub fn write_github_workflow(path: &Path) -> Result<(), io::Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, GITHUB_WORKFLOW_TEMPLATE)
+}
+
+pub fn write_gitlab_ci(path: &Path) -> Result<(), io::Error> {
+    fs::write(path, GITLAB_CI_TEMPLATE)
 }
 
 pub fn read_log_entries_from_path(path: &Path) -> Result<Vec<Decision>, io::Error> {

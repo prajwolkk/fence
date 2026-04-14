@@ -285,7 +285,8 @@ fn run_init() -> Result<(), Box<dyn Error>> {
                 .interact()?;
             config.sentinel_enabled = setup_sentinel;
             if setup_sentinel {
-                config.sentinel_platform = Some(platform);
+                config.sentinel_platform = Some(platform.clone());
+                maybe_write_ci_template(&platform)?;
             }
         }
 
@@ -389,6 +390,39 @@ fn detect_monitored_paths() -> Vec<String> {
     paths.sort();
     paths.dedup();
     paths
+}
+
+fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
+    match platform {
+        "GitHub" => {
+            let path = Path::new(".github").join("workflows").join("fence.yml");
+            if path.exists() {
+                let overwrite = Confirm::new()
+                    .with_prompt("fence.yml already exists. Overwrite?")
+                    .default(false)
+                    .interact()?;
+                if !overwrite {
+                    return Ok(());
+                }
+            }
+            fence::write_github_workflow(&path)?;
+        }
+        "GitLab" => {
+            let path = Path::new(".gitlab-ci.yml");
+            if path.exists() {
+                let overwrite = Confirm::new()
+                    .with_prompt(".gitlab-ci.yml already exists. Overwrite?")
+                    .default(false)
+                    .interact()?;
+                if !overwrite {
+                    return Ok(());
+                }
+            }
+            fence::write_gitlab_ci(&path)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn run_browse() -> Result<(), Box<dyn Error>> {
