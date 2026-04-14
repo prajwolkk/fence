@@ -1,13 +1,24 @@
 use std::error::Error;
+use std::io;
 use std::path::Path;
 use std::process;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use crossterm::{
+    event::{self, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use dialoguer::{Confirm, Input, Select};
 use fence::{
     config_path, default_project_name, ensure_gitignore_contains, ensure_log_file, git_hooks_path,
     has_git_directory, install_pre_commit_hook, sanitize_project_name, FenceConfig, FenceManager,
     FenceMode, NotificationProvider, NotificationsConfig, TeamSettings,
+};
+use ratatui::{
+    prelude::*,
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 #[derive(Parser)]
@@ -25,6 +36,7 @@ enum Commands {
     Search { keyword: String },
     Check,
     Export,
+    Browse,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -56,6 +68,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Export => {
             fence::export_markdown()?;
+        }
+        Commands::Browse => {
+            run_browse()?;
         }
     }
 
@@ -185,4 +200,66 @@ fn prompt_custom_command_provider() -> Result<Option<NotificationsConfig>, Box<d
         webhook_url: None,
         custom_command: optional_value(custom_command),
     }))
+}
+
+fn run_browse() -> Result<(), Box<dyn Error>> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+
+    let result = browse_loop(&mut terminal);
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), Box<dyn Error>> {
+    loop {
+        terminal.draw(|frame| draw_browse_ui(frame))?;
+
+        if event::poll(Duration::from_millis(200))? {
+            if let Event::Key(key) = event::read()? {
+                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn draw_browse_ui(frame: &mut Frame) {
+    let area = frame.area();
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(layout[0]);
+
+    let list_block = Block::default().borders(Borders::ALL).title("Decisions");
+    let detail_block = Block::default().borders(Borders::ALL).title("Details");
+
+    let empty_message = Paragraph::new("No decisions yet. Run `fence log` to create one.")
+        .block(list_block.clone())
+        .wrap(Wrap { trim: true });
+    frame.render_widget(empty_message, body[0]);
+
+    let detail_message = Paragraph::new("Select a decision to view details.")
+        .block(detail_block)
+        .wrap(Wrap { trim: true });
+    frame.render_widget(detail_message, body[1]);
+
+    let help = Paragraph::new("q: quit")
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+    frame.render_widget(help, layout[1]);
 }
