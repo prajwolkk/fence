@@ -72,11 +72,28 @@ fn default_auto_export() -> bool {
     true
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecisionEntry {
+fn default_category() -> DecisionCategory {
+    DecisionCategory::General
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DecisionCategory {
+    Architecture,
+    Technical,
+    Product,
+    Security,
+    General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Decision {
     pub timestamp: String,
     pub author: String,
     pub message: String,
+    #[serde(default = "default_category")]
+    pub category: DecisionCategory,
+    #[serde(default)]
+    pub optional_tags: Vec<String>,
 }
 
 impl FenceConfig {
@@ -130,10 +147,12 @@ impl FenceManager {
     }
 
     pub fn record(message: &str) -> Result<(), io::Error> {
-        let entry = DecisionEntry {
+        let entry = Decision {
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             author: Self::get_author(),
             message: message.to_string(),
+            category: DecisionCategory::General,
+            optional_tags: Vec::new(),
         };
         let config = load_runtime_config();
         let log_path = PathBuf::from(&config.log_path);
@@ -208,18 +227,14 @@ pub fn ensure_log_file(path: &Path) -> Result<(), io::Error> {
         .map(|_| ())
 }
 
-pub fn write_raw_log(path: &Path, entry: &DecisionEntry) -> Result<(), io::Error> {
+pub fn write_raw_log(path: &Path, entry: &Decision) -> Result<(), io::Error> {
     ensure_log_file(path)?;
-
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(
-        file,
-        "[{}] ({}) {}",
-        entry.timestamp, entry.author, entry.message
-    )
+    let serialized = serde_json::to_string(entry).map_err(io::Error::other)?;
+    writeln!(file, "{serialized}")
 }
 
-pub fn append_markdown_row(path: &Path, entry: &DecisionEntry) -> Result<(), io::Error> {
+pub fn append_markdown_row(path: &Path, entry: &Decision) -> Result<(), io::Error> {
     ensure_markdown_header(path)?;
 
     let escaped_message = escape_markdown_cell(&entry.message);
@@ -279,8 +294,16 @@ pub fn export_markdown_from_log(log_path: &Path, markdown_path: &Path) -> Result
     fs::write(markdown_path, output)
 }
 
-pub fn parse_log_line(line: &str) -> Option<DecisionEntry> {
+pub fn parse_log_line(line: &str) -> Option<Decision> {
     let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(entry) = serde_json::from_str::<Decision>(trimmed) {
+        return Some(entry);
+    }
+
     if !trimmed.starts_with('[') {
         return None;
     }
@@ -292,10 +315,12 @@ pub fn parse_log_line(line: &str) -> Option<DecisionEntry> {
     let author = remainder.get(0..close_paren)?.to_string();
     let message = remainder.get(close_paren + 2..)?.to_string();
 
-    Some(DecisionEntry {
+    Some(Decision {
         timestamp,
         author,
         message,
+        category: DecisionCategory::General,
+        optional_tags: Vec::new(),
     })
 }
 
@@ -339,12 +364,12 @@ pub fn check_tracking_integrity() -> Result<(bool, TrackingStatus, TrackingStatu
     Ok((log_ok && md_ok, log_status, md_status))
 }
 
-pub fn read_log_entries() -> Result<Vec<DecisionEntry>, io::Error> {
+pub fn read_log_entries() -> Result<Vec<Decision>, io::Error> {
     let config = load_runtime_config();
     read_log_entries_from_path(Path::new(&config.log_path))
 }
 
-pub fn read_log_entries_from_path(path: &Path) -> Result<Vec<DecisionEntry>, io::Error> {
+pub fn read_log_entries_from_path(path: &Path) -> Result<Vec<Decision>, io::Error> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -402,7 +427,7 @@ pub fn check_sync() -> Result<bool, io::Error> {
     Ok(log_count == markdown_count)
 }
 
-pub fn dispatch_notifications(config: &FenceConfig, entry: &DecisionEntry) {
+pub fn dispatch_notifications(config: &FenceConfig, entry: &Decision) {
     if let Some(notifications) = &config.notifications {
         if let Some(webhook_url) = notifications.webhook_url.as_deref() {
             send_webhook_notification(webhook_url, entry);
@@ -554,7 +579,7 @@ fn fallback_system_author() -> String {
     }
 }
 
-fn send_webhook_notification(webhook_url: &str, entry: &DecisionEntry) {
+fn send_webhook_notification(webhook_url: &str, entry: &Decision) {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(3)))
         .build();
@@ -569,7 +594,7 @@ fn send_webhook_notification(webhook_url: &str, entry: &DecisionEntry) {
     let _ = agent.post(webhook_url).send_json(payload);
 }
 
-fn run_custom_command(template: &str, entry: &DecisionEntry) {
+fn run_custom_command(template: &str, entry: &Decision) {
     let command = template
         .replace("{message}", &shell_escape(&entry.message))
         .replace("{author}", &shell_escape(&entry.author))
@@ -686,10 +711,12 @@ mod tests {
     #[test]
     fn append_markdown_row_creates_header_and_escaped_row() {
         let path = temp_path("decisions-md");
-        let entry = DecisionEntry {
+        let entry = Decision {
             timestamp: "2026-04-14 12:00:00".to_string(),
             author: "praj".to_string(),
             message: "Ship A | B test".to_string(),
+            category: DecisionCategory::General,
+            optional_tags: Vec::new(),
         };
 
         append_markdown_row(&path, &entry).expect("should append markdown row");
@@ -708,6 +735,22 @@ mod tests {
         assert_eq!(entry.timestamp, "2026-04-14 12:00:00");
         assert_eq!(entry.author, "praj");
         assert_eq!(entry.message, "Ship it");
+        assert_eq!(entry.category, DecisionCategory::General);
+        assert!(entry.optional_tags.is_empty());
+    }
+
+    #[test]
+    fn parse_log_line_reads_json() {
+        let entry = Decision {
+            timestamp: "2026-04-14 12:00:00".to_string(),
+            author: "praj".to_string(),
+            message: "Ship it".to_string(),
+            category: DecisionCategory::Architecture,
+            optional_tags: vec!["rust".to_string(), "perf".to_string()],
+        };
+        let line = serde_json::to_string(&entry).expect("should serialize");
+        let parsed = parse_log_line(&line).expect("should parse json");
+        assert_eq!(parsed, entry);
     }
 
     #[test]
