@@ -29,8 +29,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     match &cli.command {
         Commands::Init => run_init()?,
         Commands::Log { message } => {
-            FenceManager::record(message);
-            println!("🚀 Decision recorded!");
+            FenceManager::record(message)?;
+            println!("🚀 Decision recorded and DECISIONS.md updated!");
         }
         Commands::List => {
             println!("\n📖 --- DECISION HISTORY ---");
