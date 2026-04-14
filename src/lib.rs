@@ -225,11 +225,14 @@ impl FenceManager {
         optional_tags: Vec<String>,
     ) -> Result<(), io::Error> {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let author = Self::get_author();
+        let branch = get_branch_name();
+        let id = short_hash(&format!("{timestamp}{author}{branch}{message}"));
         let entry = Decision {
-            author: Self::get_author(),
-            id: short_hash(&format!("{timestamp}{message}")),
+            id,
+            author,
             timestamp,
-            branch: get_branch_name(),
+            branch,
             message: message.to_string(),
             category,
             optional_tags,
@@ -330,6 +333,9 @@ pub fn write_decision_file(entry: &Decision) -> Result<(), io::Error> {
 }
 
 pub fn write_decision_at_path(path: &Path, entry: &Decision) -> Result<(), io::Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let serialized = serde_json::to_string_pretty(entry).map_err(io::Error::other)?;
     fs::write(path, serialized)
 }
