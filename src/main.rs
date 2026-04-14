@@ -13,8 +13,9 @@ use crossterm::{
 use dialoguer::{Confirm, Input, Select};
 use fence::{
     config_path, default_project_name, ensure_gitignore_contains, ensure_log_file, git_hooks_path,
-    has_git_directory, install_pre_commit_hook, remove_ignore_entry, sanitize_project_name,
-    FenceConfig, FenceManager, FenceMode, NotificationProvider, NotificationsConfig, TeamSettings,
+    git_remote_platform, has_git_directory, install_pre_commit_hook, remove_ignore_entry,
+    sanitize_project_name, FenceConfig, FenceManager, FenceMode, NotificationProvider,
+    NotificationsConfig, TeamSettings,
 };
 use ratatui::{
     prelude::*,
@@ -44,6 +45,15 @@ enum Commands {
     Export,
     Browse,
     Site,
+    Sentinel {
+        #[command(subcommand)]
+        command: SentinelCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SentinelCommands {
+    Init,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -102,6 +112,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             let path = fence::generate_site()?;
             println!("Generated site at {}", path.display());
         }
+        Commands::Sentinel { command } => match command {
+            SentinelCommands::Init => {
+                if !has_git_directory() {
+                    println!(
+                        "The Sentinel requires a Git repository. Please run git init first."
+                    );
+                    process::exit(1);
+                }
+                println!("Sentinel setup is not yet implemented in this build.");
+            }
+        },
     }
 
     Ok(())
@@ -165,11 +186,10 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         (FenceMode::Solo, None, None)
     };
 
-    let config = FenceConfig::new(project_name, mode, notifications, team_settings);
+    let mut config = FenceConfig::new(project_name, mode, notifications, team_settings);
     let log_path = Path::new(&config.log_path);
 
     ensure_log_file(log_path)?;
-    fence::write_config(&config_path, &config)?;
 
     let track_log = Confirm::new()
         .with_prompt("Track decisions.log in Git?")
@@ -180,7 +200,8 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         .default(true)
         .interact()?;
 
-    if !has_git_directory() {
+    let git_present = has_git_directory();
+    if !git_present {
         println!("Note: Not a git repository. Fence works best with Git.");
     }
 
@@ -195,17 +216,34 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         ensure_gitignore_contains("DECISIONS.md")?;
     }
 
-    let hooks_dir = git_hooks_path();
-    if hooks_dir.is_dir() {
-        let install_hook = Confirm::new()
-            .with_prompt("Install Git pre-commit hook to automate documentation sync?")
-            .default(false)
-            .interact()?;
+    if git_present {
+        if let Some(platform) = git_remote_platform() {
+            let setup_sentinel = Confirm::new()
+                .with_prompt(format!(
+                    "I see you're using {platform}. Would you like to set up the Sentinel to auto-generate and host your Decision Site?"
+                ))
+                .default(true)
+                .interact()?;
+            config.sentinel_enabled = setup_sentinel;
+            if setup_sentinel {
+                config.sentinel_platform = Some(platform);
+            }
+        }
 
-        if install_hook {
-            install_pre_commit_hook(&hooks_dir)?;
+        let hooks_dir = git_hooks_path();
+        if hooks_dir.is_dir() {
+            let install_hook = Confirm::new()
+                .with_prompt("Install Git pre-commit hook to automate documentation sync?")
+                .default(false)
+                .interact()?;
+
+            if install_hook {
+                install_pre_commit_hook(&hooks_dir)?;
+            }
         }
     }
+
+    fence::write_config(&config_path, &config)?;
 
     println!("🛡️ Fence initialized! Your intent is now trackable.");
     println!("Run fence log 'your message' to start.");

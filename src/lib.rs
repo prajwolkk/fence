@@ -59,6 +59,10 @@ pub struct FenceConfig {
     pub log_path: String,
     #[serde(default = "default_auto_export")]
     pub auto_export: bool,
+    #[serde(default)]
+    pub sentinel_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sentinel_platform: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifications: Option<NotificationsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +113,8 @@ impl FenceConfig {
             mode,
             log_path: default_log_path(),
             auto_export: default_auto_export(),
+            sentinel_enabled: false,
+            sentinel_platform: None,
             notifications,
             team_settings,
         }
@@ -209,6 +215,8 @@ pub fn load_runtime_config() -> FenceConfig {
         mode: FenceMode::Solo,
         log_path: default_log_path(),
         auto_export: default_auto_export(),
+        sentinel_enabled: false,
+        sentinel_platform: None,
         notifications: None,
         team_settings: None,
     })
@@ -483,6 +491,30 @@ fn git_working_matches_index(path: &Path) -> Result<bool, io::Error> {
 
 pub fn has_git_directory() -> bool {
     Path::new(".git").exists()
+}
+
+pub fn git_remote_platform() -> Option<String> {
+    let output = Command::new("git")
+        .args(["remote", "-v"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    if text.contains("github.com") {
+        return Some("GitHub".to_string());
+    }
+    if text.contains("gitlab.com") {
+        return Some("GitLab".to_string());
+    }
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some("Remote".to_string())
+    }
 }
 
 pub fn git_hooks_path() -> PathBuf {
