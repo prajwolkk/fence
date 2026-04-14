@@ -242,6 +242,51 @@ pub fn escape_markdown_cell(value: &str) -> String {
     value.replace('|', "\\|")
 }
 
+pub fn count_log_entries(path: &Path) -> Result<usize, io::Error> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err),
+    };
+
+    Ok(content.lines().filter(|line| !line.trim().is_empty()).count())
+}
+
+pub fn count_markdown_entries(path: &Path) -> Result<usize, io::Error> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err),
+    };
+
+    let mut count = 0;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+        if trimmed.contains("| Date | Author | Decision | Status |") {
+            continue;
+        }
+        if trimmed.contains("| :--- | :--- | :--- | :--- |") {
+            continue;
+        }
+        if trimmed == "|" {
+            continue;
+        }
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+pub fn check_sync() -> Result<bool, io::Error> {
+    let config = load_runtime_config();
+    let log_count = count_log_entries(Path::new(&config.log_path))?;
+    let markdown_count = count_markdown_entries(Path::new(DEFAULT_DECISIONS_MD_PATH))?;
+    Ok(log_count == markdown_count)
+}
+
 pub fn dispatch_notifications(config: &FenceConfig, entry: &DecisionEntry) {
     if let Some(notifications) = &config.notifications {
         if let Some(webhook_url) = notifications.webhook_url.as_deref() {
@@ -531,5 +576,31 @@ mod tests {
     fn shell_escape_wraps_and_escapes_single_quotes() {
         assert_eq!(shell_escape("ship it"), "'ship it'");
         assert_eq!(shell_escape("it's live"), "'it'\"'\"'s live'");
+    }
+
+    #[test]
+    fn count_log_entries_ignores_empty_lines() {
+        let path = temp_path("log-count");
+        fs::write(&path, "[a]\n\n[b]\n").expect("should write log");
+
+        let count = count_log_entries(&path).expect("should count log entries");
+        assert_eq!(count, 2);
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn count_markdown_entries_skips_header_and_separator() {
+        let path = temp_path("md-count");
+        fs::write(
+            &path,
+            "# Header\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n| a | b | c | d |\n| e | f | g | h |\n",
+        )
+        .expect("should write md");
+
+        let count = count_markdown_entries(&path).expect("should count markdown entries");
+        assert_eq!(count, 2);
+
+        fs::remove_file(path).ok();
     }
 }

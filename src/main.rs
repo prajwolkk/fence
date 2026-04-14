@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::path::Path;
+use std::process;
 
 use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Input, Select};
@@ -22,6 +23,7 @@ enum Commands {
     Log { message: String },
     List,
     Search { keyword: String },
+    Check,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -42,6 +44,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("\n🔍 --- SEARCH RESULTS ---");
             for line in results {
                 println!("{line}");
+            }
+        }
+        Commands::Check => {
+            let in_sync = fence::check_sync()?;
+            if !in_sync {
+                println!("❌ Sync Error: DECISIONS.md is missing entries!");
+                process::exit(1);
             }
         }
     }
