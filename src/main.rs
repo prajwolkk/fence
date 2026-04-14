@@ -4,8 +4,9 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Input, Select};
 use fence::{
-    config_path, default_project_name, ensure_gitignore_contains, ensure_log_file, has_git_directory,
-    sanitize_project_name, FenceConfig, FenceManager, FenceMode, TeamSettings,
+    config_path, default_project_name, ensure_gitignore_contains, ensure_log_file, git_hooks_path,
+    has_git_directory, install_pre_commit_hook, sanitize_project_name, FenceConfig, FenceManager,
+    FenceMode, NotificationProvider, NotificationsConfig, TeamSettings,
 };
 
 #[derive(Parser)]
@@ -80,20 +81,33 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         .default(0)
         .interact()?;
 
-    let (mode, team_settings) = if mode_index == 1 {
-        let _: String = Input::new()
-            .with_prompt("Slack Webhook URL (optional)")
-            .allow_empty(true)
-            .interact_text()?;
+    let (mode, notifications, team_settings) = if mode_index == 1 {
+        let provider_index = Select::new()
+            .with_prompt("Notification Provider")
+            .items([
+                "Slack",
+                "Discord",
+                "Generic Webhook",
+                "Custom Command",
+            ])
+            .default(0)
+            .interact()?;
+
+        let notifications = match provider_index {
+            0 => prompt_webhook_provider(NotificationProvider::Slack)?,
+            1 => prompt_webhook_provider(NotificationProvider::Discord)?,
+            2 => prompt_webhook_provider(NotificationProvider::GenericWebhook)?,
+            _ => prompt_custom_command_provider()?,
+        };
 
         let team_settings = TeamSettings { jira_domain: None };
 
-        (FenceMode::Team, Some(team_settings))
+        (FenceMode::Team, notifications, Some(team_settings))
     } else {
-        (FenceMode::Solo, None)
+        (FenceMode::Solo, None, None)
     };
 
-    let config = FenceConfig::new(project_name, mode, None, team_settings);
+    let config = FenceConfig::new(project_name, mode, notifications, team_settings);
     let log_path = Path::new(&config.log_path);
 
     ensure_log_file(log_path)?;
@@ -104,6 +118,18 @@ fn run_init() -> Result<(), Box<dyn Error>> {
     }
 
     ensure_gitignore_contains(&config.log_path)?;
+
+    let hooks_dir = git_hooks_path();
+    if hooks_dir.is_dir() {
+        let install_hook = Confirm::new()
+            .with_prompt("Install Git pre-commit hook to automate documentation sync?")
+            .default(false)
+            .interact()?;
+
+        if install_hook {
+            install_pre_commit_hook(&hooks_dir)?;
+        }
+    }
 
     println!("🛡️ Fence initialized! Your intent is now trackable.");
     println!("Run fence log 'your message' to start.");
@@ -118,4 +144,32 @@ fn optional_value(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn prompt_webhook_provider(
+    provider: NotificationProvider,
+) -> Result<Option<NotificationsConfig>, Box<dyn Error>> {
+    let webhook_url: String = Input::new()
+        .with_prompt("Webhook URL")
+        .allow_empty(true)
+        .interact_text()?;
+
+    Ok(Some(NotificationsConfig {
+        provider: Some(provider),
+        webhook_url: optional_value(webhook_url),
+        custom_command: None,
+    }))
+}
+
+fn prompt_custom_command_provider() -> Result<Option<NotificationsConfig>, Box<dyn Error>> {
+    let custom_command: String = Input::new()
+        .with_prompt("Custom Command")
+        .allow_empty(true)
+        .interact_text()?;
+
+    Ok(Some(NotificationsConfig {
+        provider: Some(NotificationProvider::CustomCommand),
+        webhook_url: None,
+        custom_command: optional_value(custom_command),
+    }))
 }

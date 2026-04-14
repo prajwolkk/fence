@@ -10,6 +10,8 @@ const CONFIG_FILE_NAME: &str = "fence.toml";
 const DEFAULT_LOG_PATH: &str = "decisions.log";
 const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
+const PRE_COMMIT_MARKER: &str = "# fence-pre-commit-hook";
+const PRE_COMMIT_SNIPPET: &str = "# fence-pre-commit-hook\nif [ -f fence.toml ] && grep -q \"auto_export = true\" fence.toml; then\n  if [ ! -f DECISIONS.md ]; then\n    echo \"Fence: DECISIONS.md is missing. Run fence log 'your message' before committing.\"\n    exit 1\n  fi\nfi\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FenceMode {
@@ -240,6 +242,10 @@ pub fn has_git_directory() -> bool {
     Path::new(".git").exists()
 }
 
+pub fn git_hooks_path() -> PathBuf {
+    Path::new(".git").join("hooks")
+}
+
 pub fn ensure_gitignore_contains(entry: &str) -> Result<(), io::Error> {
     ensure_ignore_entry(Path::new(".gitignore"), entry)
 }
@@ -259,6 +265,33 @@ pub fn ensure_ignore_entry(path: &Path, entry: &str) -> Result<(), io::Error> {
     }
 
     writeln!(file, "{normalized_entry}")
+}
+
+pub fn install_pre_commit_hook(hooks_dir: &Path) -> Result<(), io::Error> {
+    fs::create_dir_all(hooks_dir)?;
+
+    let hook_path = hooks_dir.join("pre-commit");
+    let existing = fs::read_to_string(&hook_path).unwrap_or_default();
+
+    if existing.contains(PRE_COMMIT_MARKER) {
+        ensure_hook_is_executable(&hook_path)?;
+        return Ok(());
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&hook_path)?;
+
+    if existing.is_empty() {
+        writeln!(file, "#!/bin/sh")?;
+        writeln!(file)?;
+    } else if !existing.ends_with('\n') {
+        writeln!(file)?;
+    }
+
+    writeln!(file, "{PRE_COMMIT_SNIPPET}")?;
+    ensure_hook_is_executable(&hook_path)
 }
 
 pub fn default_project_name() -> String {
@@ -314,6 +347,21 @@ fn fallback_system_author() -> String {
         }
         _ => "Unknown Developer".to_string(),
     }
+}
+
+#[cfg(unix)]
+fn ensure_hook_is_executable(path: &Path) -> Result<(), io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path)?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn ensure_hook_is_executable(_path: &Path) -> Result<(), io::Error> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -410,5 +458,20 @@ mod tests {
         assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship A \\| B test | ✅ Decided |"));
 
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn install_pre_commit_hook_creates_idempotent_script() {
+        let hooks_dir = temp_path("hooks");
+
+        install_pre_commit_hook(&hooks_dir).expect("should install hook");
+        install_pre_commit_hook(&hooks_dir).expect("should avoid duplicate hook block");
+
+        let content =
+            fs::read_to_string(hooks_dir.join("pre-commit")).expect("should read hook content");
+        assert!(content.starts_with("#!/bin/sh\n"));
+        assert_eq!(content.matches(PRE_COMMIT_MARKER).count(), 1);
+
+        fs::remove_dir_all(hooks_dir).ok();
     }
 }
