@@ -578,6 +578,9 @@ fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<
                     KeyCode::Char('h') => {
                         hide_superseded = !hide_superseded;
                     }
+                    KeyCode::Char('r') => {
+                        jump_to_replacement(&entries, &visible, &mut list_state);
+                    }
                     _ => {}
                 }
             }
@@ -662,7 +665,7 @@ fn draw_browse_ui(
     }
 
     let help = Paragraph::new(format!(
-        "q: quit  j/k: navigate  enter: toggle detail  h: hide superseded ({})  [Log: {}] [MD: {}]",
+        "q: quit  j/k: navigate  enter: toggle detail  h: hide superseded ({})  r: open replacement  [Log: {}] [MD: {}]",
         if hide_superseded { "on" } else { "off" },
         tracking_label(log_status),
         tracking_label(md_status)
@@ -737,6 +740,30 @@ fn move_selection(delta: isize, visible_len: usize, list_state: &mut ListState) 
     list_state.select(Some(next as usize));
 }
 
+fn jump_to_replacement(entries: &[fence::Decision], visible: &[usize], list_state: &mut ListState) {
+    let Some(selected) = list_state.selected() else {
+        return;
+    };
+    let Some(entry_index) = visible.get(selected) else {
+        return;
+    };
+    let Some(replacement_id) = entries
+        .get(*entry_index)
+        .and_then(|entry| entry.superseded_by.as_deref())
+    else {
+        return;
+    };
+
+    if let Some(next_visible_index) = visible.iter().position(|index| {
+        entries
+            .get(*index)
+            .map(|entry| entry.id == replacement_id)
+            .unwrap_or(false)
+    }) {
+        list_state.select(Some(next_visible_index));
+    }
+}
+
 fn detail_text(entries: &[fence::Decision], visible: &[usize], list_state: &ListState) -> String {
     let Some(index) = list_state.selected() else {
         return "Select a decision to view details.".to_string();
@@ -756,9 +783,16 @@ fn detail_text(entries: &[fence::Decision], visible: &[usize], list_state: &List
 
     let review = format!("Review Due: {}", entry.review_due);
     let status = format!("Status: {}", status_label(entry));
+    let lifecycle_link = match entry.superseded_by.as_deref() {
+        Some(replacement_id) => format!("View Replacement: {replacement_id} (press r)"),
+        None => match entry.supersedes.as_deref() {
+            Some(previous_id) => format!("Supersedes: {previous_id}"),
+            None => "Lifecycle Link: -".to_string(),
+        },
+    };
 
     format!(
-        "Category: {} {}\nAuthor: {}\nTimestamp: {}\n{}\n{}\n{}\n\n{}",
+        "Category: {} {}\nAuthor: {}\nTimestamp: {}\n{}\n{}\n{}\n{}\n\n{}",
         category_icon(entry.category),
         category_label(entry.category),
         entry.author,
@@ -766,6 +800,7 @@ fn detail_text(entries: &[fence::Decision], visible: &[usize], list_state: &List
         status,
         review,
         tags,
+        lifecycle_link,
         entry.message
     )
 }
