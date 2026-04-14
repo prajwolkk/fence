@@ -81,22 +81,19 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         .interact()?;
 
     let (mode, team_settings) = if mode_index == 1 {
-        let slack_webhook: String = Input::new()
+        let _: String = Input::new()
             .with_prompt("Slack Webhook URL (optional)")
             .allow_empty(true)
             .interact_text()?;
 
-        let team_settings = TeamSettings {
-            slack_webhook: optional_value(slack_webhook),
-            jira_domain: None,
-        };
+        let team_settings = TeamSettings { jira_domain: None };
 
         (FenceMode::Team, Some(team_settings))
     } else {
         (FenceMode::Solo, None)
     };
 
-    let config = FenceConfig::new(project_name, mode, team_settings);
+    let config = FenceConfig::new(project_name, mode, None, team_settings);
     let log_path = Path::new(&config.log_path);
 
     ensure_log_file(log_path)?;

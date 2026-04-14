@@ -20,9 +20,25 @@ pub enum FenceMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TeamSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub slack_webhook: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub jira_domain: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NotificationProvider {
+    Slack,
+    Discord,
+    GenericWebhook,
+    CustomCommand,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct NotificationsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<NotificationProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +49,8 @@ pub struct FenceConfig {
     pub log_path: String,
     #[serde(default = "default_auto_export")]
     pub auto_export: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<NotificationsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_settings: Option<TeamSettings>,
 }
@@ -56,6 +74,7 @@ impl FenceConfig {
     pub fn new(
         project_name: String,
         mode: FenceMode,
+        notifications: Option<NotificationsConfig>,
         team_settings: Option<TeamSettings>,
     ) -> Self {
         Self {
@@ -63,6 +82,7 @@ impl FenceConfig {
             mode,
             log_path: default_log_path(),
             auto_export: default_auto_export(),
+            notifications,
             team_settings,
         }
     }
@@ -150,6 +170,7 @@ pub fn load_runtime_config() -> FenceConfig {
         mode: FenceMode::Solo,
         log_path: default_log_path(),
         auto_export: default_auto_export(),
+        notifications: None,
         team_settings: None,
     })
 }
@@ -347,8 +368,12 @@ mod tests {
         let config = FenceConfig::new(
             "Fence".to_string(),
             FenceMode::Team,
+            Some(NotificationsConfig {
+                provider: Some(NotificationProvider::Slack),
+                webhook_url: Some("https://hooks.slack.test".to_string()),
+                custom_command: None,
+            }),
             Some(TeamSettings {
-                slack_webhook: Some("https://hooks.slack.test".to_string()),
                 jira_domain: None,
             }),
         );
