@@ -12,7 +12,7 @@ const CONFIG_FILE_NAME: &str = "fence.toml";
 const DEFAULT_LOG_PATH: &str = "decisions.log";
 const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
-const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"🛡️ Fence: Commit blocked. Your documentation is out of sync.\"\n  echo \"Run 'fence log' through the CLI or 'fence export' to fix it.\"\n  exit 1\nfi\n";
+const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"Fence: Commit blocked. Your documentation is out of sync.\"\n  echo \"Run 'fence export' to fix it.\"\n  exit 1\nfi\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FenceMode {
@@ -239,6 +239,58 @@ pub fn ensure_markdown_header(path: &Path) -> Result<(), io::Error> {
 
 pub fn escape_markdown_cell(value: &str) -> String {
     value.replace('|', "\\|")
+}
+
+pub fn export_markdown() -> Result<(), io::Error> {
+    let config = load_runtime_config();
+    export_markdown_from_log(
+        Path::new(&config.log_path),
+        Path::new(DEFAULT_DECISIONS_MD_PATH),
+    )
+}
+
+pub fn export_markdown_from_log(log_path: &Path, markdown_path: &Path) -> Result<(), io::Error> {
+    let content = match fs::read_to_string(log_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+
+    let mut output = String::from(DECISIONS_MD_HEADER);
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(entry) = parse_log_line(line) {
+            let escaped_message = escape_markdown_cell(&entry.message);
+            output.push_str(&format!(
+                "| {} | {} | {} | ✅ Decided |\n",
+                entry.timestamp, entry.author, escaped_message
+            ));
+        }
+    }
+
+    fs::write(markdown_path, output)
+}
+
+pub fn parse_log_line(line: &str) -> Option<DecisionEntry> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+
+    let close_bracket = trimmed.find("] (")?;
+    let timestamp = trimmed.get(1..close_bracket)?.to_string();
+    let remainder = trimmed.get(close_bracket + 3..)?;
+    let close_paren = remainder.find(") ")?;
+    let author = remainder.get(0..close_paren)?.to_string();
+    let message = remainder.get(close_paren + 2..)?.to_string();
+
+    Some(DecisionEntry {
+        timestamp,
+        author,
+        message,
+    })
 }
 
 pub fn count_log_entries(path: &Path) -> Result<usize, io::Error> {
@@ -535,6 +587,36 @@ mod tests {
         assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship A \\| B test | ✅ Decided |"));
 
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn parse_log_line_extracts_entry() {
+        let entry =
+            parse_log_line("[2026-04-14 12:00:00] (praj) Ship it").expect("should parse log line");
+        assert_eq!(entry.timestamp, "2026-04-14 12:00:00");
+        assert_eq!(entry.author, "praj");
+        assert_eq!(entry.message, "Ship it");
+    }
+
+    #[test]
+    fn export_markdown_from_log_regenerates_table() {
+        let log_path = temp_path("export-log");
+        let md_path = temp_path("export-md");
+        fs::write(
+            &log_path,
+            "[2026-04-14 12:00:00] (praj) Ship it\n[2026-04-15 08:00:00] (lex) Use A | B\n",
+        )
+        .expect("should write log");
+
+        export_markdown_from_log(&log_path, &md_path).expect("should export markdown");
+
+        let content = fs::read_to_string(&md_path).expect("should read markdown");
+        assert!(content.starts_with(DECISIONS_MD_HEADER));
+        assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship it | ✅ Decided |"));
+        assert!(content.contains("| 2026-04-15 08:00:00 | lex | Use A \\| B | ✅ Decided |"));
+
+        fs::remove_file(log_path).ok();
+        fs::remove_file(md_path).ok();
     }
 
     #[test]

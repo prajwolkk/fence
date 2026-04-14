@@ -24,6 +24,7 @@ enum Commands {
     List,
     Search { keyword: String },
     Check,
+    Export,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -49,9 +50,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Check => {
             let in_sync = fence::check_sync()?;
             if !in_sync {
-                println!("❌ Sync Error: DECISIONS.md is missing entries!");
+                println!("Sync Error: DECISIONS.md is out of sync. Run 'fence export' to fix it.");
                 process::exit(1);
             }
+        }
+        Commands::Export => {
+            fence::export_markdown()?;
         }
     }
 
