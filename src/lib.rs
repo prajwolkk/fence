@@ -464,6 +464,33 @@ pub fn ensure_ignore_entry(path: &Path, entry: &str) -> Result<(), io::Error> {
     writeln!(file, "{normalized_entry}")
 }
 
+pub fn remove_ignore_entry(path: &Path, entry: &str) -> Result<(), io::Error> {
+    let normalized_entry = entry.trim();
+    let existing = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+
+    let original_count = existing.lines().count();
+    let lines: Vec<&str> = existing
+        .lines()
+        .filter(|line| line.trim() != normalized_entry)
+        .collect();
+
+    if lines.len() == original_count {
+        return Ok(());
+    }
+
+    let output = if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n") + "\n"
+    };
+
+    fs::write(path, output)
+}
+
 pub fn install_pre_commit_hook(hooks_dir: &Path) -> Result<(), io::Error> {
     fs::create_dir_all(hooks_dir)?;
 

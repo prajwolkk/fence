@@ -13,8 +13,8 @@ use crossterm::{
 use dialoguer::{Confirm, Input, Select};
 use fence::{
     config_path, default_project_name, ensure_gitignore_contains, ensure_log_file, git_hooks_path,
-    has_git_directory, install_pre_commit_hook, sanitize_project_name, FenceConfig, FenceManager,
-    FenceMode, NotificationProvider, NotificationsConfig, TeamSettings,
+    has_git_directory, install_pre_commit_hook, remove_ignore_entry, sanitize_project_name,
+    FenceConfig, FenceManager, FenceMode, NotificationProvider, NotificationsConfig, TeamSettings,
 };
 use ratatui::{
     prelude::*,
@@ -154,11 +154,29 @@ fn run_init() -> Result<(), Box<dyn Error>> {
     ensure_log_file(log_path)?;
     fence::write_config(&config_path, &config)?;
 
+    let track_log = Confirm::new()
+        .with_prompt("Track decisions.log in Git?")
+        .default(false)
+        .interact()?;
+    let track_md = Confirm::new()
+        .with_prompt("Track DECISIONS.md in Git?")
+        .default(true)
+        .interact()?;
+
     if !has_git_directory() {
         println!("Note: Not a git repository. Fence works best with Git.");
     }
 
-    ensure_gitignore_contains(&config.log_path)?;
+    if track_log {
+        remove_ignore_entry(Path::new(".gitignore"), &config.log_path)?;
+    } else {
+        ensure_gitignore_contains(&config.log_path)?;
+    }
+    if track_md {
+        remove_ignore_entry(Path::new(".gitignore"), "DECISIONS.md")?;
+    } else {
+        ensure_gitignore_contains("DECISIONS.md")?;
+    }
 
     let hooks_dir = git_hooks_path();
     if hooks_dir.is_dir() {
