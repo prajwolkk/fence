@@ -187,6 +187,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
     };
 
     let mut config = FenceConfig::new(project_name, mode, notifications, team_settings);
+    config.monitored_paths = detect_monitored_paths();
     let log_path = Path::new(&config.log_path);
 
     ensure_log_file(log_path)?;
@@ -320,6 +321,20 @@ fn parse_tags(value: Option<String>) -> Vec<String> {
         .filter(|tag| !tag.is_empty())
         .map(|tag| tag.to_string())
         .collect()
+}
+
+fn detect_monitored_paths() -> Vec<String> {
+    let mut paths = Vec::new();
+    if Path::new("Cargo.toml").exists() {
+        paths.push("Cargo.toml".to_string());
+    }
+    if Path::new("pubspec.yaml").exists() {
+        paths.push("pubspec.yaml".to_string());
+    }
+    if Path::new("package.json").exists() {
+        paths.push("package.json".to_string());
+    }
+    paths
 }
 
 fn run_browse() -> Result<(), Box<dyn Error>> {

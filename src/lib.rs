@@ -60,6 +60,8 @@ pub struct FenceConfig {
     #[serde(default = "default_auto_export")]
     pub auto_export: bool,
     #[serde(default)]
+    pub monitored_paths: Vec<String>,
+    #[serde(default)]
     pub standalone_mode: bool,
     #[serde(default)]
     pub safe_sync: bool,
@@ -119,6 +121,7 @@ impl FenceConfig {
             mode,
             log_path: default_log_path(),
             auto_export: default_auto_export(),
+            monitored_paths: Vec::new(),
             standalone_mode: false,
             safe_sync: false,
             sync_disclaimer: None,
@@ -224,6 +227,7 @@ pub fn load_runtime_config() -> FenceConfig {
         mode: FenceMode::Solo,
         log_path: default_log_path(),
         auto_export: default_auto_export(),
+        monitored_paths: Vec::new(),
         standalone_mode: false,
         safe_sync: false,
         sync_disclaimer: None,
