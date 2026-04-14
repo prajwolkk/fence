@@ -1180,7 +1180,10 @@ fn ensure_hook_is_executable(_path: &Path) -> Result<(), io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     fn temp_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -1314,6 +1317,7 @@ mod tests {
 
     #[test]
     fn export_markdown_from_log_regenerates_table() {
+        let _guard = TEST_MUTEX.lock().expect("should lock test mutex");
         let md_path = temp_path("export-md");
         fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
 
@@ -1437,5 +1441,91 @@ mod tests {
         assert_eq!(count, 2);
 
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn deprecate_decision_updates_status_and_markdown() {
+        let _guard = TEST_MUTEX.lock().expect("should lock test mutex");
+        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
+        let path = decisions_dir().join("20260414120000_deadbeef.json");
+        let entry = Decision {
+            id: "deadbeef".to_string(),
+            timestamp: "2026-04-14 12:00:00".to_string(),
+            author: "praj".to_string(),
+            branch: "main".to_string(),
+            message: "Legacy deployment flow".to_string(),
+            category: DecisionCategory::Technical,
+            optional_tags: vec!["deploy".to_string()],
+            status: DecisionStatus::Accepted,
+            review_due: "2027-04-14T12:00:00+00:00".to_string(),
+            supersedes: None,
+            superseded_by: None,
+        };
+        write_decision_at_path(&path, &entry).expect("should write decision");
+
+        let deprecated = deprecate_decision("deadbeef").expect("should deprecate decision");
+        assert!(deprecated);
+
+        let stored = find_decision_file("deadbeef")
+            .expect("should read decision")
+            .expect("decision should exist")
+            .decision;
+        assert_eq!(stored.status, DecisionStatus::Deprecated);
+
+        let markdown =
+            fs::read_to_string(DEFAULT_DECISIONS_MD_PATH).expect("should rewrite markdown export");
+        assert!(markdown.contains("| 2026-04-14 12:00:00 | praj | Legacy deployment flow | Deprecated |"));
+
+        fs::remove_dir_all(decisions_dir()).ok();
+        fs::remove_file(DEFAULT_DECISIONS_MD_PATH).ok();
+    }
+
+    #[test]
+    fn supersede_decision_marks_old_entry_and_links_replacement() {
+        let _guard = TEST_MUTEX.lock().expect("should lock test mutex");
+        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
+        let old_path = decisions_dir().join("20260414120000_old12345.json");
+        let new_path = decisions_dir().join("20260415120000_new12345.json");
+        let old = Decision {
+            id: "old12345".to_string(),
+            timestamp: "2026-04-14 12:00:00".to_string(),
+            author: "praj".to_string(),
+            branch: "main".to_string(),
+            message: "Use legacy queue".to_string(),
+            category: DecisionCategory::Architecture,
+            optional_tags: vec!["queue".to_string()],
+            status: DecisionStatus::Accepted,
+            review_due: "2027-04-14T12:00:00+00:00".to_string(),
+            supersedes: None,
+            superseded_by: None,
+        };
+        let replacement = Decision {
+            id: "new12345".to_string(),
+            timestamp: "2026-04-15 12:00:00".to_string(),
+            author: "praj".to_string(),
+            branch: "main".to_string(),
+            message: "Use durable queue".to_string(),
+            category: DecisionCategory::Architecture,
+            optional_tags: vec!["queue".to_string(), "durable".to_string()],
+            status: DecisionStatus::Accepted,
+            review_due: "2027-04-15T12:00:00+00:00".to_string(),
+            supersedes: Some("old12345".to_string()),
+            superseded_by: None,
+        };
+        write_decision_at_path(&old_path, &old).expect("should write old decision");
+        write_decision_at_path(&new_path, &replacement).expect("should write replacement");
+
+        let superseded =
+            supersede_decision("old12345", "new12345").expect("should supersede decision");
+        assert!(superseded);
+
+        let stored = find_decision_file("old12345")
+            .expect("should read decision")
+            .expect("decision should exist")
+            .decision;
+        assert_eq!(stored.status, DecisionStatus::Superseded);
+        assert_eq!(stored.superseded_by.as_deref(), Some("new12345"));
+
+        fs::remove_dir_all(decisions_dir()).ok();
     }
 }
