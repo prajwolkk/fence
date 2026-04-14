@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::path::Path;
@@ -236,6 +237,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
     };
 
     let mut config = FenceConfig::new(project_name, mode, notifications, team_settings);
+    let detected_stack = fence::detect_stack();
     let suggested_paths = fence::default_monitored_paths();
     let suggested_text = if suggested_paths.is_empty() {
         "".to_string()
@@ -247,6 +249,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         .default(suggested_text)
         .interact_text()?;
     config.monitored_paths = parse_tags(Some(monitored_input));
+    config.scoring = default_scoring_for_stack(detected_stack.as_deref());
     ensure_decisions_dir()?;
 
     let git_present = has_git_directory();
@@ -380,6 +383,26 @@ fn parse_tags(value: Option<String>) -> Vec<String> {
         .filter(|tag| !tag.is_empty())
         .map(|tag| tag.to_string())
         .collect()
+}
+
+fn default_scoring_for_stack(stack: Option<&str>) -> HashMap<String, u32> {
+    let mut scoring = HashMap::new();
+    match stack {
+        Some("Rust") => {
+            scoring.insert("Cargo.toml".to_string(), 10);
+            scoring.insert("src/**/*.rs".to_string(), 2);
+        }
+        Some("Flutter") => {
+            scoring.insert("pubspec.yaml".to_string(), 10);
+            scoring.insert("lib/**".to_string(), 2);
+        }
+        Some("Node") => {
+            scoring.insert("package.json".to_string(), 10);
+            scoring.insert("src/**".to_string(), 2);
+        }
+        _ => {}
+    }
+    scoring
 }
 
 

@@ -1,4 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Write};
@@ -78,6 +78,10 @@ pub struct FenceConfig {
     pub sentinel_platform: Option<String>,
     #[serde(default)]
     pub enforcement_level: EnforcementLevel,
+    #[serde(default)]
+    pub scoring: HashMap<String, u32>,
+    #[serde(default = "default_threshold")]
+    pub threshold: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifications: Option<NotificationsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +98,10 @@ fn default_auto_export() -> bool {
 
 fn default_category() -> DecisionCategory {
     DecisionCategory::General
+}
+
+fn default_threshold() -> u32 {
+    10
 }
 
 fn short_hash(value: &str) -> String {
@@ -177,6 +185,8 @@ impl FenceConfig {
             sentinel_enabled: false,
             sentinel_platform: None,
             enforcement_level: EnforcementLevel::Blocking,
+            scoring: HashMap::new(),
+            threshold: default_threshold(),
             notifications,
             team_settings,
         }
@@ -288,6 +298,8 @@ pub fn load_runtime_config() -> FenceConfig {
         sentinel_enabled: false,
         sentinel_platform: None,
         enforcement_level: EnforcementLevel::Blocking,
+        scoring: HashMap::new(),
+        threshold: default_threshold(),
         notifications: None,
         team_settings: None,
     })
@@ -532,8 +544,12 @@ pub fn read_decision_entries() -> Result<Vec<Decision>, io::Error> {
         .collect())
 }
 
-pub fn count_log_entries(_path: &Path) -> Result<usize, io::Error> {
-    let dir = decisions_dir();
+pub fn count_log_entries(path: &Path) -> Result<usize, io::Error> {
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        decisions_dir()
+    };
     if !dir.exists() {
         return Ok(0);
     }
@@ -670,6 +686,68 @@ fn is_monitored_path(path: &str, monitored: &[String]) -> bool {
     })
 }
 
+fn compute_weighted_score(diff_files: &[String], scoring: &HashMap<String, u32>) -> (u32, usize) {
+    if scoring.is_empty() {
+        return (0, 0);
+    }
+
+    let mut total = 0;
+    let mut counted = 0;
+
+    for file in diff_files {
+        let mut best = 0;
+        for (pattern, points) in scoring {
+            if matches_pattern(file, pattern) {
+                best = best.max(*points);
+            }
+        }
+        if best > 0 {
+            total += best;
+            counted += 1;
+        }
+    }
+
+    (total, counted)
+}
+
+fn matches_pattern(path: &str, pattern: &str) -> bool {
+    if pattern.contains('*') || pattern.contains('?') {
+        return wildcard_match(path, pattern);
+    }
+    path == pattern || path.starts_with(&format!("{pattern}/"))
+}
+
+fn wildcard_match(text: &str, pattern: &str) -> bool {
+    let (mut ti, mut pi) = (0usize, 0usize);
+    let (text_bytes, pattern_bytes) = (text.as_bytes(), pattern.as_bytes());
+    let (mut star_idx, mut match_idx) = (None, 0usize);
+
+    while ti < text_bytes.len() {
+        if pi < pattern_bytes.len()
+            && (pattern_bytes[pi] == b'?' || pattern_bytes[pi] == text_bytes[ti])
+        {
+            ti += 1;
+            pi += 1;
+        } else if pi < pattern_bytes.len() && pattern_bytes[pi] == b'*' {
+            star_idx = Some(pi);
+            match_idx = ti;
+            pi += 1;
+        } else if let Some(star) = star_idx {
+            pi = star + 1;
+            match_idx += 1;
+            ti = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < pattern_bytes.len() && pattern_bytes[pi] == b'*' {
+        pi += 1;
+    }
+
+    pi == pattern_bytes.len()
+}
+
 pub fn has_git_directory() -> bool {
     Path::new(".git").exists()
 }
@@ -743,6 +821,8 @@ pub struct SentinelCheckResult {
 pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult, io::Error> {
     let config = load_runtime_config();
     let monitored = config.monitored_paths;
+    let scoring = config.scoring;
+    let threshold = config.threshold;
 
     let latest_message = git_head_message().unwrap_or_default();
     let lower = latest_message.to_lowercase();
@@ -764,8 +844,15 @@ pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult
         .filter(|path| is_monitored_path(path, &monitored))
         .cloned()
         .collect();
+    let (score, scored_files) = compute_weighted_score(&diff_files, &scoring);
 
-    if monitored_changes.is_empty() {
+    let requires_decision = if !scoring.is_empty() && threshold > 0 {
+        score > threshold
+    } else {
+        !monitored_changes.is_empty()
+    };
+
+    if !requires_decision {
         return Ok(SentinelCheckResult {
             bypassed: false,
             changed_files: 0,
@@ -779,7 +866,11 @@ pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult
 
     Ok(SentinelCheckResult {
         bypassed: false,
-        changed_files: monitored_changes.len(),
+        changed_files: if !scoring.is_empty() {
+            scored_files
+        } else {
+            monitored_changes.len()
+        },
         decision_found,
     })
 }
@@ -1134,10 +1225,10 @@ mod tests {
 
     #[test]
     fn count_log_entries_ignores_empty_lines() {
-        fs::remove_dir_all(decisions_dir()).ok();
-        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
+        let temp_dir = temp_path("decision-dir");
+        fs::create_dir_all(&temp_dir).expect("should create decisions dir");
         write_decision_at_path(
-            &decisions_dir().join("20260414120000_a1.json"),
+            &temp_dir.join("20260414120000_a1.json"),
             &Decision {
                 id: "a1".to_string(),
                 timestamp: "2026-04-14 12:00:00".to_string(),
@@ -1150,7 +1241,7 @@ mod tests {
         )
         .expect("should write decision");
         write_decision_at_path(
-            &decisions_dir().join("20260415120000_b1.json"),
+            &temp_dir.join("20260415120000_b1.json"),
             &Decision {
                 id: "b1".to_string(),
                 timestamp: "2026-04-15 12:00:00".to_string(),
@@ -1163,10 +1254,10 @@ mod tests {
         )
         .expect("should write decision");
 
-        let count = count_log_entries(Path::new("unused")).expect("should count log entries");
+        let count = count_log_entries(&temp_dir).expect("should count log entries");
         assert_eq!(count, 2);
 
-        fs::remove_dir_all(decisions_dir()).ok();
+        fs::remove_dir_all(temp_dir).ok();
     }
 
     #[test]
