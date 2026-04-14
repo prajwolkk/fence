@@ -12,10 +12,10 @@ use crossterm::{
 };
 use dialoguer::{Confirm, Input, Select};
 use fence::{
-    config_path, default_project_name, ensure_gitignore_contains, ensure_log_file, git_hooks_path,
-    git_remote_platform, has_git_directory, install_pre_commit_hook, remove_ignore_entry,
-    sanitize_project_name, FenceConfig, FenceManager, FenceMode, NotificationProvider,
-    NotificationsConfig, TeamSettings,
+    config_path, default_project_name, ensure_decisions_dir, ensure_gitignore_contains,
+    git_hooks_path, git_remote_platform, has_git_directory, install_pre_commit_hook,
+    remove_ignore_entry, sanitize_project_name, FenceConfig, FenceManager, FenceMode,
+    NotificationProvider, NotificationsConfig, TeamSettings,
 };
 use ratatui::{
     prelude::*,
@@ -247,9 +247,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         .default(suggested_text)
         .interact_text()?;
     config.monitored_paths = parse_tags(Some(monitored_input));
-    let log_path = Path::new(&config.log_path);
-
-    ensure_log_file(log_path)?;
+    ensure_decisions_dir()?;
 
     let git_present = has_git_directory();
     if !git_present {
@@ -265,7 +263,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         config.safe_sync = true;
 
         let track_log = Confirm::new()
-            .with_prompt("Track decisions.log in Git?")
+            .with_prompt("Track .fence/decisions in Git?")
             .default(false)
             .interact()?;
         let track_md = Confirm::new()
@@ -274,9 +272,9 @@ fn run_init() -> Result<(), Box<dyn Error>> {
             .interact()?;
 
         if track_log {
-            remove_ignore_entry(Path::new(".gitignore"), &config.log_path)?;
+            remove_ignore_entry(Path::new(".gitignore"), ".fence/decisions")?;
         } else {
-            ensure_gitignore_contains(&config.log_path)?;
+            ensure_gitignore_contains(".fence/decisions")?;
         }
         if track_md {
             remove_ignore_entry(Path::new(".gitignore"), "DECISIONS.md")?;

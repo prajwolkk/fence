@@ -1,4 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,6 +12,7 @@ use serde_json::json;
 
 const CONFIG_FILE_NAME: &str = "fence.toml";
 const DEFAULT_LOG_PATH: &str = "decisions.log";
+const DECISION_DIR: &str = ".fence/decisions";
 const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
 const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"Fence: Commit blocked. Log or documentation is out of sync.\"\n  echo \"Run 'fence export' and stage the updated files.\"\n  exit 1\nfi\n";
@@ -93,6 +96,32 @@ fn default_category() -> DecisionCategory {
     DecisionCategory::General
 }
 
+fn short_hash(value: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    let hash = hasher.finish();
+    let hex = format!("{:016x}", hash);
+    hex.chars().take(8).collect()
+}
+
+fn get_branch_name() -> String {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if name.is_empty() {
+                "unknown".to_string()
+            } else {
+                name
+            }
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EnforcementLevel {
     Warning,
@@ -116,8 +145,12 @@ pub enum DecisionCategory {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Decision {
+    #[serde(default)]
+    pub id: String,
     pub timestamp: String,
     pub author: String,
+    #[serde(default)]
+    pub branch: String,
     pub message: String,
     #[serde(default = "default_category")]
     pub category: DecisionCategory,
@@ -191,18 +224,19 @@ impl FenceManager {
         category: DecisionCategory,
         optional_tags: Vec<String>,
     ) -> Result<(), io::Error> {
+        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let entry = Decision {
-            timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             author: Self::get_author(),
+            id: short_hash(&format!("{timestamp}{message}")),
+            timestamp,
+            branch: get_branch_name(),
             message: message.to_string(),
             category,
             optional_tags,
         };
+        write_decision_file(&entry)?;
+
         let config = load_runtime_config();
-        let log_path = PathBuf::from(&config.log_path);
-
-        write_raw_log(&log_path, &entry)?;
-
         if config.auto_export {
             append_markdown_row(Path::new(DEFAULT_DECISIONS_MD_PATH), &entry)?;
         }
@@ -278,11 +312,26 @@ pub fn ensure_log_file(path: &Path) -> Result<(), io::Error> {
         .map(|_| ())
 }
 
-pub fn write_raw_log(path: &Path, entry: &Decision) -> Result<(), io::Error> {
-    ensure_log_file(path)?;
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    let serialized = serde_json::to_string(entry).map_err(io::Error::other)?;
-    writeln!(file, "{serialized}")
+pub fn decisions_dir() -> PathBuf {
+    PathBuf::from(DECISION_DIR)
+}
+
+pub fn ensure_decisions_dir() -> Result<(), io::Error> {
+    fs::create_dir_all(decisions_dir())
+}
+
+pub fn write_decision_file(entry: &Decision) -> Result<(), io::Error> {
+    fs::create_dir_all(decisions_dir())?;
+    let file_ts = entry.timestamp.replace([':', ' '], "");
+    let filename = format!("{file_ts}_{}.json", entry.id);
+    let path = decisions_dir().join(filename);
+    write_decision_at_path(&path, entry)?;
+    Ok(())
+}
+
+pub fn write_decision_at_path(path: &Path, entry: &Decision) -> Result<(), io::Error> {
+    let serialized = serde_json::to_string_pretty(entry).map_err(io::Error::other)?;
+    fs::write(path, serialized)
 }
 
 pub fn append_markdown_row(path: &Path, entry: &Decision) -> Result<(), io::Error> {
@@ -314,35 +363,22 @@ pub fn escape_markdown_cell(value: &str) -> String {
 }
 
 pub fn export_markdown() -> Result<(), io::Error> {
-    let config = load_runtime_config();
-    export_markdown_from_log(
-        Path::new(&config.log_path),
-        Path::new(DEFAULT_DECISIONS_MD_PATH),
-    )
+    export_markdown_from_log(Path::new(DEFAULT_DECISIONS_MD_PATH)).map(|_| ())
 }
 
-pub fn export_markdown_from_log(log_path: &Path, markdown_path: &Path) -> Result<(), io::Error> {
-    let content = match fs::read_to_string(log_path) {
-        Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err),
-    };
-
+pub fn export_markdown_from_log(markdown_path: &Path) -> Result<PathBuf, io::Error> {
+    let entries = read_decision_entries()?;
     let mut output = String::from(DECISIONS_MD_HEADER);
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Some(entry) = parse_log_line(line) {
-            let escaped_message = escape_markdown_cell(&entry.message);
-            output.push_str(&format!(
-                "| {} | {} | {} | ✅ Decided |\n",
-                entry.timestamp, entry.author, escaped_message
-            ));
-        }
+    for entry in entries {
+        let escaped_message = escape_markdown_cell(&entry.message);
+        output.push_str(&format!(
+            "| {} | {} | {} | ✅ Decided |\n",
+            entry.timestamp, entry.author, escaped_message
+        ));
     }
 
-    fs::write(markdown_path, output)
+    fs::write(markdown_path, output)?;
+    Ok(markdown_path.to_path_buf())
 }
 
 pub fn parse_log_line(line: &str) -> Option<Decision> {
@@ -367,8 +403,10 @@ pub fn parse_log_line(line: &str) -> Option<Decision> {
     let message = remainder.get(close_paren + 2..)?.to_string();
 
     Some(Decision {
+        id: short_hash(&format!("{timestamp}{author}{message}")),
         timestamp,
         author,
+        branch: String::new(),
         message,
         category: DecisionCategory::General,
         optional_tags: Vec::new(),
@@ -376,8 +414,7 @@ pub fn parse_log_line(line: &str) -> Option<Decision> {
 }
 
 pub fn tracking_status_for_log() -> TrackingStatus {
-    let config = load_runtime_config();
-    tracking_status_for_path(Path::new(&config.log_path))
+    tracking_status_for_path(&decisions_dir())
 }
 
 pub fn tracking_status_for_markdown() -> TrackingStatus {
@@ -397,14 +434,13 @@ pub fn tracking_status_for_path(path: &Path) -> TrackingStatus {
 }
 
 pub fn check_tracking_integrity() -> Result<(bool, TrackingStatus, TrackingStatus), io::Error> {
-    let config = load_runtime_config();
-    let log_path = Path::new(&config.log_path);
+    let log_path = decisions_dir();
     let md_path = Path::new(DEFAULT_DECISIONS_MD_PATH);
-    let log_status = tracking_status_for_path(log_path);
+    let log_status = tracking_status_for_path(&log_path);
     let md_status = tracking_status_for_path(md_path);
 
     let log_ok = match log_status {
-        TrackingStatus::Tracked => git_working_matches_index(log_path)?,
+        TrackingStatus::Tracked => git_working_matches_index(&log_path)?,
         TrackingStatus::Local => true,
     };
     let md_ok = match md_status {
@@ -416,8 +452,7 @@ pub fn check_tracking_integrity() -> Result<(bool, TrackingStatus, TrackingStatu
 }
 
 pub fn read_log_entries() -> Result<Vec<Decision>, io::Error> {
-    let config = load_runtime_config();
-    read_log_entries_from_path(Path::new(&config.log_path))
+    read_decision_entries()
 }
 
 pub fn generate_site() -> Result<PathBuf, io::Error> {
@@ -456,14 +491,47 @@ pub fn read_log_entries_from_path(path: &Path) -> Result<Vec<Decision>, io::Erro
         .collect::<Vec<_>>())
 }
 
-pub fn count_log_entries(path: &Path) -> Result<usize, io::Error> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
-        Err(err) => return Err(err),
-    };
+pub struct DecisionFile {
+    pub path: PathBuf,
+    pub decision: Decision,
+}
 
-    Ok(content.lines().filter(|line| !line.trim().is_empty()).count())
+pub fn read_decision_files() -> Result<Vec<DecisionFile>, io::Error> {
+    let mut entries = Vec::new();
+    let dir = decisions_dir();
+    if !dir.exists() {
+        return Ok(entries);
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let content = fs::read_to_string(&path)?;
+        if let Ok(decision) = serde_json::from_str::<Decision>(&content) {
+            entries.push(DecisionFile { path, decision });
+        }
+    }
+
+    entries.sort_by_key(|entry| entry.decision.timestamp.clone());
+    Ok(entries)
+}
+
+pub fn read_decision_entries() -> Result<Vec<Decision>, io::Error> {
+    Ok(read_decision_files()?
+        .into_iter()
+        .map(|entry| entry.decision)
+        .collect())
+}
+
+pub fn count_log_entries(_path: &Path) -> Result<usize, io::Error> {
+    let dir = decisions_dir();
+    if !dir.exists() {
+        return Ok(0);
+    }
+    Ok(fs::read_dir(dir)?.filter(|entry| entry.is_ok()).count())
 }
 
 pub fn count_markdown_entries(path: &Path) -> Result<usize, io::Error> {
@@ -669,7 +737,6 @@ pub struct SentinelCheckResult {
 pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult, io::Error> {
     let config = load_runtime_config();
     let monitored = config.monitored_paths;
-    let log_path = config.log_path;
 
     let latest_message = git_head_message().unwrap_or_default();
     let lower = latest_message.to_lowercase();
@@ -700,7 +767,9 @@ pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult
         });
     }
 
-    let decision_found = diff_files.iter().any(|path| path == &log_path);
+    let decision_found = diff_files
+        .iter()
+        .any(|path| path.starts_with(&format!("{DECISION_DIR}/")));
 
     Ok(SentinelCheckResult {
         bypassed: false,
@@ -953,8 +1022,10 @@ mod tests {
     fn append_markdown_row_creates_header_and_escaped_row() {
         let path = temp_path("decisions-md");
         let entry = Decision {
+            id: "abc12345".to_string(),
             timestamp: "2026-04-14 12:00:00".to_string(),
             author: "praj".to_string(),
+            branch: "main".to_string(),
             message: "Ship A | B test".to_string(),
             category: DecisionCategory::General,
             optional_tags: Vec::new(),
@@ -983,8 +1054,10 @@ mod tests {
     #[test]
     fn parse_log_line_reads_json() {
         let entry = Decision {
+            id: "abc12345".to_string(),
             timestamp: "2026-04-14 12:00:00".to_string(),
             author: "praj".to_string(),
+            branch: "main".to_string(),
             message: "Ship it".to_string(),
             category: DecisionCategory::Architecture,
             optional_tags: vec!["rust".to_string(), "perf".to_string()],
@@ -996,22 +1069,40 @@ mod tests {
 
     #[test]
     fn export_markdown_from_log_regenerates_table() {
-        let log_path = temp_path("export-log");
         let md_path = temp_path("export-md");
-        fs::write(
-            &log_path,
-            "[2026-04-14 12:00:00] (praj) Ship it\n[2026-04-15 08:00:00] (lex) Use A | B\n",
-        )
-        .expect("should write log");
+        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
 
-        export_markdown_from_log(&log_path, &md_path).expect("should export markdown");
+        let first = Decision {
+            id: "abc12345".to_string(),
+            timestamp: "2026-04-14 12:00:00".to_string(),
+            author: "praj".to_string(),
+            branch: "main".to_string(),
+            message: "Ship it".to_string(),
+            category: DecisionCategory::General,
+            optional_tags: Vec::new(),
+        };
+        let second = Decision {
+            id: "def67890".to_string(),
+            timestamp: "2026-04-15 08:00:00".to_string(),
+            author: "lex".to_string(),
+            branch: "main".to_string(),
+            message: "Use A | B".to_string(),
+            category: DecisionCategory::General,
+            optional_tags: Vec::new(),
+        };
+        write_decision_at_path(&decisions_dir().join("20260414120000_abc12345.json"), &first)
+            .expect("should write decision");
+        write_decision_at_path(&decisions_dir().join("20260415080000_def67890.json"), &second)
+            .expect("should write decision");
+
+        export_markdown_from_log(&md_path).expect("should export markdown");
 
         let content = fs::read_to_string(&md_path).expect("should read markdown");
         assert!(content.starts_with(DECISIONS_MD_HEADER));
         assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship it | ✅ Decided |"));
         assert!(content.contains("| 2026-04-15 08:00:00 | lex | Use A \\| B | ✅ Decided |"));
 
-        fs::remove_file(log_path).ok();
+        fs::remove_dir_all(decisions_dir()).ok();
         fs::remove_file(md_path).ok();
     }
 
@@ -1037,13 +1128,39 @@ mod tests {
 
     #[test]
     fn count_log_entries_ignores_empty_lines() {
-        let path = temp_path("log-count");
-        fs::write(&path, "[a]\n\n[b]\n").expect("should write log");
+        fs::remove_dir_all(decisions_dir()).ok();
+        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
+        write_decision_at_path(
+            &decisions_dir().join("20260414120000_a1.json"),
+            &Decision {
+                id: "a1".to_string(),
+                timestamp: "2026-04-14 12:00:00".to_string(),
+                author: "praj".to_string(),
+                branch: "main".to_string(),
+                message: "A".to_string(),
+                category: DecisionCategory::General,
+                optional_tags: Vec::new(),
+            },
+        )
+        .expect("should write decision");
+        write_decision_at_path(
+            &decisions_dir().join("20260415120000_b1.json"),
+            &Decision {
+                id: "b1".to_string(),
+                timestamp: "2026-04-15 12:00:00".to_string(),
+                author: "praj".to_string(),
+                branch: "main".to_string(),
+                message: "B".to_string(),
+                category: DecisionCategory::General,
+                optional_tags: Vec::new(),
+            },
+        )
+        .expect("should write decision");
 
-        let count = count_log_entries(&path).expect("should count log entries");
+        let count = count_log_entries(Path::new("unused")).expect("should count log entries");
         assert_eq!(count, 2);
 
-        fs::remove_file(path).ok();
+        fs::remove_dir_all(decisions_dir()).ok();
     }
 
     #[test]
