@@ -73,6 +73,8 @@ pub struct FenceConfig {
     pub sentinel_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sentinel_platform: Option<String>,
+    #[serde(default)]
+    pub enforcement_level: EnforcementLevel,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifications: Option<NotificationsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +91,18 @@ fn default_auto_export() -> bool {
 
 fn default_category() -> DecisionCategory {
     DecisionCategory::General
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum EnforcementLevel {
+    Warning,
+    Blocking,
+}
+
+impl Default for EnforcementLevel {
+    fn default() -> Self {
+        EnforcementLevel::Blocking
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +143,7 @@ impl FenceConfig {
             sync_disclaimer: None,
             sentinel_enabled: false,
             sentinel_platform: None,
+            enforcement_level: EnforcementLevel::Blocking,
             notifications,
             team_settings,
         }
@@ -235,6 +250,7 @@ pub fn load_runtime_config() -> FenceConfig {
         sync_disclaimer: None,
         sentinel_enabled: false,
         sentinel_platform: None,
+        enforcement_level: EnforcementLevel::Blocking,
         notifications: None,
         team_settings: None,
     })

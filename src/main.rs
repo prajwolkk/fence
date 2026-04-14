@@ -135,6 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     process::exit(1);
                 }
                 let result = fence::sentinel_check(base)?;
+                let enforcement = fence::load_runtime_config().enforcement_level;
                 if result.bypassed {
                     println!("✅ Sentinel bypassed for latest commit.");
                     return Ok(());
@@ -149,8 +150,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                         result.changed_files
                     );
                 } else {
-                    println!("❌ Architectural change detected without log.");
-                    process::exit(1);
+                    match enforcement {
+                        fence::EnforcementLevel::Warning => {
+                            println!(
+                                "WARNING: Architectural change detected without log. Enforcement level is Warning."
+                            );
+                        }
+                        fence::EnforcementLevel::Blocking => {
+                            println!("❌ Architectural change detected without log.");
+                            process::exit(1);
+                        }
+                    }
                 }
             }
         },
