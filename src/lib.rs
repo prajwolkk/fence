@@ -2,9 +2,11 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 const CONFIG_FILE_NAME: &str = "fence.toml";
 const DEFAULT_LOG_PATH: &str = "decisions.log";
@@ -137,6 +139,8 @@ impl FenceManager {
             append_markdown_row(Path::new(DEFAULT_DECISIONS_MD_PATH), &entry)?;
         }
 
+        dispatch_notifications(&config, &entry);
+
         Ok(())
     }
 
@@ -236,6 +240,18 @@ pub fn ensure_markdown_header(path: &Path) -> Result<(), io::Error> {
 
 pub fn escape_markdown_cell(value: &str) -> String {
     value.replace('|', "\\|")
+}
+
+pub fn dispatch_notifications(config: &FenceConfig, entry: &DecisionEntry) {
+    if let Some(notifications) = &config.notifications {
+        if let Some(webhook_url) = notifications.webhook_url.as_deref() {
+            send_webhook_notification(webhook_url, entry);
+        }
+
+        if let Some(custom_command) = notifications.custom_command.as_deref() {
+            run_custom_command(custom_command, entry);
+        }
+    }
 }
 
 pub fn has_git_directory() -> bool {
@@ -347,6 +363,42 @@ fn fallback_system_author() -> String {
         }
         _ => "Unknown Developer".to_string(),
     }
+}
+
+fn send_webhook_notification(webhook_url: &str, entry: &DecisionEntry) {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build();
+    let agent: ureq::Agent = config.into();
+
+    let payload = json!({
+        "author": entry.author,
+        "message": entry.message,
+        "timestamp": entry.timestamp,
+    });
+
+    let _ = agent.post(webhook_url).send_json(payload);
+}
+
+fn run_custom_command(template: &str, entry: &DecisionEntry) {
+    let command = template
+        .replace("{message}", &shell_escape(&entry.message))
+        .replace("{author}", &shell_escape(&entry.author))
+        .replace("{timestamp}", &shell_escape(&entry.timestamp));
+
+    #[cfg(unix)]
+    let _ = Command::new("sh").arg("-c").arg(&command).status();
+
+    #[cfg(windows)]
+    let _ = Command::new("cmd").args(["/C", &command]).status();
+}
+
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(unix)]
@@ -473,5 +525,11 @@ mod tests {
         assert_eq!(content.matches(PRE_COMMIT_MARKER).count(), 1);
 
         fs::remove_dir_all(hooks_dir).ok();
+    }
+
+    #[test]
+    fn shell_escape_wraps_and_escapes_single_quotes() {
+        assert_eq!(shell_escape("ship it"), "'ship it'");
+        assert_eq!(shell_escape("it's live"), "'it'\"'\"'s live'");
     }
 }
