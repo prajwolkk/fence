@@ -277,11 +277,12 @@ fn run_init() -> Result<(), Box<dyn Error>> {
 
     if git_present {
         if let Some(platform) = git_remote_platform() {
+            let stack_label = detect_stack_label().unwrap_or_else(|| "Unknown".to_string());
             let setup_sentinel = Confirm::new()
                 .with_prompt(format!(
-                    "Enable Sentinel CI automation for {platform}? (Y/n)"
+                    "I detected a {stack_label} project on {platform}. Enable Sentinel CI/CD automation? (y/N)"
                 ))
-                .default(true)
+                .default(false)
                 .interact()?;
             config.sentinel_enabled = setup_sentinel;
             if setup_sentinel {
@@ -390,6 +391,19 @@ fn detect_monitored_paths() -> Vec<String> {
     paths.sort();
     paths.dedup();
     paths
+}
+
+fn detect_stack_label() -> Option<String> {
+    if Path::new("Cargo.toml").exists() {
+        return Some("Rust".to_string());
+    }
+    if Path::new("pubspec.yaml").exists() {
+        return Some("Flutter".to_string());
+    }
+    if Path::new("package.json").exists() {
+        return Some("Node".to_string());
+    }
+    None
 }
 
 fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
