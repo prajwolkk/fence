@@ -12,8 +12,7 @@ const CONFIG_FILE_NAME: &str = "fence.toml";
 const DEFAULT_LOG_PATH: &str = "decisions.log";
 const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
-const PRE_COMMIT_MARKER: &str = "# fence-pre-commit-hook";
-const PRE_COMMIT_SNIPPET: &str = "# fence-pre-commit-hook\nif [ -f fence.toml ] && grep -q \"auto_export = true\" fence.toml; then\n  if [ ! -f DECISIONS.md ]; then\n    echo \"Fence: DECISIONS.md is missing. Run fence log 'your message' before committing.\"\n    exit 1\n  fi\nfi\n";
+const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"🛡️ Fence: Commit blocked. Your documentation is out of sync.\"\n  echo \"Run 'fence log' through the CLI or 'fence export' to fix it.\"\n  exit 1\nfi\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FenceMode {
@@ -332,26 +331,7 @@ pub fn install_pre_commit_hook(hooks_dir: &Path) -> Result<(), io::Error> {
     fs::create_dir_all(hooks_dir)?;
 
     let hook_path = hooks_dir.join("pre-commit");
-    let existing = fs::read_to_string(&hook_path).unwrap_or_default();
-
-    if existing.contains(PRE_COMMIT_MARKER) {
-        ensure_hook_is_executable(&hook_path)?;
-        return Ok(());
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&hook_path)?;
-
-    if existing.is_empty() {
-        writeln!(file, "#!/bin/sh")?;
-        writeln!(file)?;
-    } else if !existing.ends_with('\n') {
-        writeln!(file)?;
-    }
-
-    writeln!(file, "{PRE_COMMIT_SNIPPET}")?;
+    fs::write(&hook_path, PRE_COMMIT_SNIPPET)?;
     ensure_hook_is_executable(&hook_path)
 }
 
@@ -566,8 +546,7 @@ mod tests {
 
         let content =
             fs::read_to_string(hooks_dir.join("pre-commit")).expect("should read hook content");
-        assert!(content.starts_with("#!/bin/sh\n"));
-        assert_eq!(content.matches(PRE_COMMIT_MARKER).count(), 1);
+        assert_eq!(content, PRE_COMMIT_SNIPPET);
 
         fs::remove_dir_all(hooks_dir).ok();
     }
