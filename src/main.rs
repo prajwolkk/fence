@@ -449,8 +449,39 @@ fn detail_text(entries: &[fence::Decision], list_state: &ListState) -> String {
         return "Select a decision to view details.".to_string();
     };
 
+    let tags = if entry.optional_tags.is_empty() {
+        "Tags: -".to_string()
+    } else {
+        format!("Tags: {}", entry.optional_tags.join(", "))
+    };
+
     format!(
-        "Author: {}\nTimestamp: {}\n\n{}",
-        entry.author, entry.timestamp, entry.message
+        "Category: {} {}\nAuthor: {}\nTimestamp: {}\n{}\n\n{}",
+        category_icon(entry.category),
+        category_label(entry.category),
+        entry.author,
+        entry.timestamp,
+        tags,
+        entry.message
     )
+}
+
+fn category_icon(category: fence::DecisionCategory) -> &'static str {
+    match category {
+        fence::DecisionCategory::Architecture => "🏛️",
+        fence::DecisionCategory::Technical => "⚙️",
+        fence::DecisionCategory::Product => "🎯",
+        fence::DecisionCategory::Security => "🛡️",
+        fence::DecisionCategory::General => "🏷️",
+    }
+}
+
+fn category_label(category: fence::DecisionCategory) -> &'static str {
+    match category {
+        fence::DecisionCategory::Architecture => "Architecture",
+        fence::DecisionCategory::Technical => "Technical",
+        fence::DecisionCategory::Product => "Product",
+        fence::DecisionCategory::Security => "Security",
+        fence::DecisionCategory::General => "General",
+    }
 }
