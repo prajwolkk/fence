@@ -191,29 +191,38 @@ fn run_init() -> Result<(), Box<dyn Error>> {
 
     ensure_log_file(log_path)?;
 
-    let track_log = Confirm::new()
-        .with_prompt("Track decisions.log in Git?")
-        .default(false)
-        .interact()?;
-    let track_md = Confirm::new()
-        .with_prompt("Track DECISIONS.md in Git?")
-        .default(true)
-        .interact()?;
-
     let git_present = has_git_directory();
     if !git_present {
         println!("Note: Not a git repository. Fence works best with Git.");
+        config.standalone_mode = true;
+        config.safe_sync = false;
+        config.sync_disclaimer =
+            Some("Standalone mode: sync integrity is not guaranteed without Git.".to_string());
     }
 
-    if track_log {
-        remove_ignore_entry(Path::new(".gitignore"), &config.log_path)?;
-    } else {
-        ensure_gitignore_contains(&config.log_path)?;
-    }
-    if track_md {
-        remove_ignore_entry(Path::new(".gitignore"), "DECISIONS.md")?;
-    } else {
-        ensure_gitignore_contains("DECISIONS.md")?;
+    if git_present {
+        config.standalone_mode = false;
+        config.safe_sync = true;
+
+        let track_log = Confirm::new()
+            .with_prompt("Track decisions.log in Git?")
+            .default(false)
+            .interact()?;
+        let track_md = Confirm::new()
+            .with_prompt("Track DECISIONS.md in Git?")
+            .default(true)
+            .interact()?;
+
+        if track_log {
+            remove_ignore_entry(Path::new(".gitignore"), &config.log_path)?;
+        } else {
+            ensure_gitignore_contains(&config.log_path)?;
+        }
+        if track_md {
+            remove_ignore_entry(Path::new(".gitignore"), "DECISIONS.md")?;
+        } else {
+            ensure_gitignore_contains("DECISIONS.md")?;
+        }
     }
 
     if git_present {

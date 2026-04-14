@@ -60,6 +60,12 @@ pub struct FenceConfig {
     #[serde(default = "default_auto_export")]
     pub auto_export: bool,
     #[serde(default)]
+    pub standalone_mode: bool,
+    #[serde(default)]
+    pub safe_sync: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_disclaimer: Option<String>,
+    #[serde(default)]
     pub sentinel_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sentinel_platform: Option<String>,
@@ -113,6 +119,9 @@ impl FenceConfig {
             mode,
             log_path: default_log_path(),
             auto_export: default_auto_export(),
+            standalone_mode: false,
+            safe_sync: false,
+            sync_disclaimer: None,
             sentinel_enabled: false,
             sentinel_platform: None,
             notifications,
@@ -215,6 +224,9 @@ pub fn load_runtime_config() -> FenceConfig {
         mode: FenceMode::Solo,
         log_path: default_log_path(),
         auto_export: default_auto_export(),
+        standalone_mode: false,
+        safe_sync: false,
+        sync_disclaimer: None,
         sentinel_enabled: false,
         sentinel_platform: None,
         notifications: None,
