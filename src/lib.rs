@@ -34,6 +34,12 @@ pub enum NotificationProvider {
     CustomCommand,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackingStatus {
+    Tracked,
+    Local,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct NotificationsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,6 +299,46 @@ pub fn parse_log_line(line: &str) -> Option<DecisionEntry> {
     })
 }
 
+pub fn tracking_status_for_log() -> TrackingStatus {
+    let config = load_runtime_config();
+    tracking_status_for_path(Path::new(&config.log_path))
+}
+
+pub fn tracking_status_for_markdown() -> TrackingStatus {
+    tracking_status_for_path(Path::new(DEFAULT_DECISIONS_MD_PATH))
+}
+
+pub fn tracking_status_for_path(path: &Path) -> TrackingStatus {
+    if !has_git_directory() {
+        return TrackingStatus::Local;
+    }
+
+    if git_is_tracked(path) {
+        TrackingStatus::Tracked
+    } else {
+        TrackingStatus::Local
+    }
+}
+
+pub fn check_tracking_integrity() -> Result<(bool, TrackingStatus, TrackingStatus), io::Error> {
+    let config = load_runtime_config();
+    let log_path = Path::new(&config.log_path);
+    let md_path = Path::new(DEFAULT_DECISIONS_MD_PATH);
+    let log_status = tracking_status_for_path(log_path);
+    let md_status = tracking_status_for_path(md_path);
+
+    let log_ok = match log_status {
+        TrackingStatus::Tracked => git_working_matches_index(log_path)?,
+        TrackingStatus::Local => true,
+    };
+    let md_ok = match md_status {
+        TrackingStatus::Tracked => git_working_matches_index(md_path)?,
+        TrackingStatus::Local => true,
+    };
+
+    Ok((log_ok && md_ok, log_status, md_status))
+}
+
 pub fn read_log_entries() -> Result<Vec<DecisionEntry>, io::Error> {
     let config = load_runtime_config();
     read_log_entries_from_path(Path::new(&config.log_path))
@@ -365,6 +411,27 @@ pub fn dispatch_notifications(config: &FenceConfig, entry: &DecisionEntry) {
         if let Some(custom_command) = notifications.custom_command.as_deref() {
             run_custom_command(custom_command, entry);
         }
+    }
+}
+
+fn git_is_tracked(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    let status = Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--", &path_str])
+        .status();
+
+    matches!(status, Ok(status) if status.success())
+}
+
+fn git_working_matches_index(path: &Path) -> Result<bool, io::Error> {
+    let path_str = path.to_string_lossy();
+    let status = Command::new("git")
+        .args(["diff", "--quiet", "--", &path_str])
+        .status();
+
+    match status {
+        Ok(status) => Ok(status.success()),
+        Err(err) => Err(err),
     }
 }
 

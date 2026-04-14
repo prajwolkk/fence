@@ -61,8 +61,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Check => {
             let in_sync = fence::check_sync()?;
-            if !in_sync {
-                println!("Sync Error: DECISIONS.md is out of sync. Run 'fence export' to fix it.");
+            let (tracking_ok, log_status, md_status) = fence::check_tracking_integrity()?;
+            if !in_sync || !tracking_ok {
+                if !in_sync {
+                    println!(
+                        "Sync Error: DECISIONS.md is out of sync. Run 'fence export' to fix it."
+                    );
+                }
+                if !tracking_ok {
+                    println!("Tracking Error: tracked files are out of sync with the staged versions.");
+                }
+                println!(
+                    "Status: Log={} MD={}",
+                    tracking_label(log_status),
+                    tracking_label(md_status)
+                );
                 process::exit(1);
             }
         }
@@ -224,9 +237,20 @@ fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<
         list_state.select(Some(0));
     }
     let mut detail_focus = false;
+    let log_status = fence::tracking_status_for_log();
+    let md_status = fence::tracking_status_for_markdown();
 
     loop {
-        terminal.draw(|frame| draw_browse_ui(frame, &entries, &mut list_state, detail_focus))?;
+        terminal.draw(|frame| {
+            draw_browse_ui(
+                frame,
+                &entries,
+                &mut list_state,
+                detail_focus,
+                log_status,
+                md_status,
+            )
+        })?;
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
@@ -255,6 +279,8 @@ fn draw_browse_ui(
     entries: &[fence::DecisionEntry],
     list_state: &mut ListState,
     detail_focus: bool,
+    log_status: fence::TrackingStatus,
+    md_status: fence::TrackingStatus,
 ) {
     let area = frame.area();
     let layout = Layout::default()
@@ -300,7 +326,11 @@ fn draw_browse_ui(
         frame.render_widget(detail_message, body[1]);
     }
 
-    let help = Paragraph::new("q: quit  j/k: navigate  enter: toggle detail")
+    let help = Paragraph::new(format!(
+        "q: quit  j/k: navigate  enter: toggle detail  [Log: {}] [MD: {}]",
+        tracking_label(log_status),
+        tracking_label(md_status)
+    ))
         .style(Style::default().fg(Color::Gray))
         .alignment(Alignment::Center);
     frame.render_widget(help, layout[1]);
@@ -330,6 +360,13 @@ fn entry_title(entry: &fence::DecisionEntry) -> String {
         "<untitled>".to_string()
     } else {
         clipped
+    }
+}
+
+fn tracking_label(status: fence::TrackingStatus) -> &'static str {
+    match status {
+        fence::TrackingStatus::Tracked => "Tracked",
+        fence::TrackingStatus::Local => "Local",
     }
 }
 
