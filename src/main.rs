@@ -223,14 +223,25 @@ fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<
     if !entries.is_empty() {
         list_state.select(Some(0));
     }
+    let mut detail_focus = false;
 
     loop {
-        terminal.draw(|frame| draw_browse_ui(frame, &entries, &mut list_state))?;
+        terminal.draw(|frame| draw_browse_ui(frame, &entries, &mut list_state, detail_focus))?;
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        move_selection(1, &entries, &mut list_state);
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        move_selection(-1, &entries, &mut list_state);
+                    }
+                    KeyCode::Enter => {
+                        detail_focus = !detail_focus;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -239,7 +250,12 @@ fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<
     Ok(())
 }
 
-fn draw_browse_ui(frame: &mut Frame, entries: &[fence::DecisionEntry], list_state: &mut ListState) {
+fn draw_browse_ui(
+    frame: &mut Frame,
+    entries: &[fence::DecisionEntry],
+    list_state: &mut ListState,
+    detail_focus: bool,
+) {
     let area = frame.area();
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -248,7 +264,11 @@ fn draw_browse_ui(frame: &mut Frame, entries: &[fence::DecisionEntry], list_stat
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints(if detail_focus {
+            [Constraint::Percentage(25), Constraint::Percentage(75)]
+        } else {
+            [Constraint::Percentage(40), Constraint::Percentage(60)]
+        })
         .split(layout[0]);
 
     let list_block = Block::default().borders(Borders::ALL).title("Decisions");
@@ -269,16 +289,18 @@ fn draw_browse_ui(frame: &mut Frame, entries: &[fence::DecisionEntry], list_stat
             .iter()
             .map(|entry| ListItem::new(format!("{} {}", entry_date(entry), entry_title(entry))))
             .collect();
-        let list = List::new(items).block(list_block);
+        let list = List::new(items)
+            .block(list_block)
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
         frame.render_stateful_widget(list, body[0], list_state);
 
-        let detail_message = Paragraph::new("Select a decision to view details.")
+        let detail_message = Paragraph::new(detail_text(entries, list_state))
             .block(detail_block)
             .wrap(Wrap { trim: true });
         frame.render_widget(detail_message, body[1]);
     }
 
-    let help = Paragraph::new("q: quit")
+    let help = Paragraph::new("q: quit  j/k: navigate  enter: toggle detail")
         .style(Style::default().fg(Color::Gray))
         .alignment(Alignment::Center);
     frame.render_widget(help, layout[1]);
@@ -309,4 +331,29 @@ fn entry_title(entry: &fence::DecisionEntry) -> String {
     } else {
         clipped
     }
+}
+
+fn move_selection(delta: isize, entries: &[fence::DecisionEntry], list_state: &mut ListState) {
+    if entries.is_empty() {
+        list_state.select(None);
+        return;
+    }
+
+    let current = list_state.selected().unwrap_or(0) as isize;
+    let next = (current + delta).clamp(0, entries.len().saturating_sub(1) as isize);
+    list_state.select(Some(next as usize));
+}
+
+fn detail_text(entries: &[fence::DecisionEntry], list_state: &ListState) -> String {
+    let Some(index) = list_state.selected() else {
+        return "Select a decision to view details.".to_string();
+    };
+    let Some(entry) = entries.get(index) else {
+        return "Select a decision to view details.".to_string();
+    };
+
+    format!(
+        "Author: {}\nTimestamp: {}\n\n{}",
+        entry.author, entry.timestamp, entry.message
+    )
 }
