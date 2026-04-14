@@ -147,12 +147,20 @@ impl FenceManager {
     }
 
     pub fn record(message: &str) -> Result<(), io::Error> {
+        Self::record_with_metadata(message, DecisionCategory::General, Vec::new())
+    }
+
+    pub fn record_with_metadata(
+        message: &str,
+        category: DecisionCategory,
+        optional_tags: Vec<String>,
+    ) -> Result<(), io::Error> {
         let entry = Decision {
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             author: Self::get_author(),
             message: message.to_string(),
-            category: DecisionCategory::General,
-            optional_tags: Vec::new(),
+            category,
+            optional_tags,
         };
         let config = load_runtime_config();
         let log_path = PathBuf::from(&config.log_path);

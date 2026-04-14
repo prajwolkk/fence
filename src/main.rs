@@ -31,7 +31,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Init,
-    Log { message: String },
+    Log {
+        message: String,
+        #[arg(short, long)]
+        category: Option<String>,
+        #[arg(short, long)]
+        tags: Option<String>,
+    },
     List,
     Search { keyword: String },
     Check,
@@ -42,10 +48,16 @@ enum Commands {
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
-    match &cli.command {
+    match cli.command {
         Commands::Init => run_init()?,
-        Commands::Log { message } => {
-            FenceManager::record(message)?;
+        Commands::Log {
+            message,
+            category,
+            tags,
+        } => {
+            let category = parse_category(category);
+            let tags = parse_tags(tags);
+            FenceManager::record_with_metadata(&message, category, tags)?;
             println!("🚀 Decision recorded and DECISIONS.md updated!");
         }
         Commands::List => {
@@ -53,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("{}", FenceManager::list());
         }
         Commands::Search { keyword } => {
-            let results = FenceManager::search(keyword);
+            let results = FenceManager::search(&keyword);
             println!("\n🔍 --- SEARCH RESULTS ---");
             for line in results {
                 println!("{line}");
@@ -233,6 +245,31 @@ fn prompt_custom_command_provider() -> Result<Option<NotificationsConfig>, Box<d
     }))
 }
 
+fn parse_category(value: Option<String>) -> fence::DecisionCategory {
+    let normalized = value
+        .unwrap_or_else(|| "gen".to_string())
+        .to_lowercase();
+
+    match normalized.as_str() {
+        "arch" | "architecture" => fence::DecisionCategory::Architecture,
+        "tech" | "technical" => fence::DecisionCategory::Technical,
+        "prod" | "product" => fence::DecisionCategory::Product,
+        "sec" | "security" => fence::DecisionCategory::Security,
+        "gen" | "general" => fence::DecisionCategory::General,
+        _ => fence::DecisionCategory::General,
+    }
+}
+
+fn parse_tags(value: Option<String>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(|tag| tag.trim())
+        .filter(|tag| !tag.is_empty())
+        .map(|tag| tag.to_string())
+        .collect()
+}
+
 fn run_browse() -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -294,7 +331,7 @@ fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<
 
 fn draw_browse_ui(
     frame: &mut Frame,
-    entries: &[fence::DecisionEntry],
+    entries: &[fence::Decision],
     list_state: &mut ListState,
     detail_focus: bool,
     log_status: fence::TrackingStatus,
@@ -354,7 +391,7 @@ fn draw_browse_ui(
     frame.render_widget(help, layout[1]);
 }
 
-fn entry_date(entry: &fence::DecisionEntry) -> &str {
+fn entry_date(entry: &fence::Decision) -> &str {
     entry
         .timestamp
         .split_whitespace()
@@ -362,7 +399,7 @@ fn entry_date(entry: &fence::DecisionEntry) -> &str {
         .unwrap_or(&entry.timestamp)
 }
 
-fn entry_title(entry: &fence::DecisionEntry) -> String {
+fn entry_title(entry: &fence::Decision) -> String {
     let title = entry.message.lines().next().unwrap_or("").trim();
     let mut clipped = String::new();
     let mut count = 0;
@@ -388,7 +425,7 @@ fn tracking_label(status: fence::TrackingStatus) -> &'static str {
     }
 }
 
-fn move_selection(delta: isize, entries: &[fence::DecisionEntry], list_state: &mut ListState) {
+fn move_selection(delta: isize, entries: &[fence::Decision], list_state: &mut ListState) {
     if entries.is_empty() {
         list_state.select(None);
         return;
@@ -399,7 +436,7 @@ fn move_selection(delta: isize, entries: &[fence::DecisionEntry], list_state: &m
     list_state.select(Some(next as usize));
 }
 
-fn detail_text(entries: &[fence::DecisionEntry], list_state: &ListState) -> String {
+fn detail_text(entries: &[fence::Decision], list_state: &ListState) -> String {
     let Some(index) = list_state.selected() else {
         return "Select a decision to view details.".to_string();
     };
