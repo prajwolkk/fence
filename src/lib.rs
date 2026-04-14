@@ -1,12 +1,12 @@
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use chrono::Local;
+use chrono::{DateTime, Duration as ChronoDuration, Local};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -100,6 +100,14 @@ fn default_category() -> DecisionCategory {
     DecisionCategory::General
 }
 
+fn default_status() -> DecisionStatus {
+    DecisionStatus::Accepted
+}
+
+fn default_review_due() -> String {
+    (Local::now() + ChronoDuration::days(365)).to_rfc3339()
+}
+
 fn default_threshold() -> u32 {
     10
 }
@@ -151,6 +159,15 @@ pub enum DecisionCategory {
     General,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionStatus {
+    Proposed,
+    Accepted,
+    Deprecated,
+    Superseded,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Decision {
     #[serde(default)]
@@ -164,6 +181,14 @@ pub struct Decision {
     pub category: DecisionCategory,
     #[serde(default)]
     pub optional_tags: Vec<String>,
+    #[serde(default = "default_status")]
+    pub status: DecisionStatus,
+    #[serde(default = "default_review_due")]
+    pub review_due: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
 }
 
 impl FenceConfig {
@@ -234,6 +259,24 @@ impl FenceManager {
         category: DecisionCategory,
         optional_tags: Vec<String>,
     ) -> Result<(), io::Error> {
+        Self::record_with_options(message, category, optional_tags, None)
+    }
+
+    pub fn record_with_options(
+        message: &str,
+        category: DecisionCategory,
+        optional_tags: Vec<String>,
+        replaces: Option<String>,
+    ) -> Result<(), io::Error> {
+        if let Some(ref old_id) = replaces {
+            if find_decision_file(old_id)?.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Decision not found: {old_id}"),
+                ));
+            }
+        }
+
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let author = Self::get_author();
         let branch = get_branch_name();
@@ -246,12 +289,19 @@ impl FenceManager {
             message: message.to_string(),
             category,
             optional_tags,
+            status: DecisionStatus::Accepted,
+            review_due: default_review_due(),
+            supersedes: replaces.clone(),
+            superseded_by: None,
         };
         write_decision_file(&entry)?;
+        if let Some(old_id) = replaces {
+            let _ = supersede_decision(&old_id, &entry.id)?;
+        }
 
         let config = load_runtime_config();
         if config.auto_export {
-            append_markdown_row(Path::new(DEFAULT_DECISIONS_MD_PATH), &entry)?;
+            export_markdown()?;
         }
 
         dispatch_notifications(&config, &entry);
@@ -260,23 +310,28 @@ impl FenceManager {
     }
 
     pub fn list() -> String {
-        let path = Self::get_log_path();
-        fs::read_to_string(&path).unwrap_or_else(|_| "No log file found.".to_string())
+        match read_decision_entries() {
+            Ok(entries) if entries.is_empty() => "No log file found.".to_string(),
+            Ok(entries) => entries
+                .into_iter()
+                .map(|entry| format!("[{}] ({}) {}", entry.timestamp, entry.author, entry.message))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(_) => "No log file found.".to_string(),
+        }
     }
 
     pub fn search(keyword: &str) -> Vec<String> {
-        let path = Self::get_log_path();
-        let file = match fs::File::open(&path) {
-            Ok(file) => file,
-            Err(_) => return Vec::new(),
-        };
-        let reader = BufReader::new(file);
         let term = keyword.to_lowercase();
-
-        reader
-            .lines()
-            .map_while(Result::ok)
-            .filter(|line| line.to_lowercase().contains(&term))
+        read_decision_entries()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|decision| {
+                decision.message.to_lowercase().contains(&term)
+                    || decision.author.to_lowercase().contains(&term)
+                    || decision.id.to_lowercase().contains(&term)
+            })
+            .map(|decision| format!("[{}] ({}) {}", decision.timestamp, decision.author, decision.message))
             .collect()
     }
 }
@@ -385,17 +440,19 @@ pub fn export_markdown() -> Result<(), io::Error> {
 }
 
 pub fn export_markdown_from_log(markdown_path: &Path) -> Result<PathBuf, io::Error> {
-    let entries = read_decision_entries()?;
-    let mut output = String::from(DECISIONS_MD_HEADER);
-    for entry in entries {
+    let mut rewritten = String::from(DECISIONS_MD_HEADER);
+    for entry in read_decision_entries()? {
         let escaped_message = escape_markdown_cell(&entry.message);
-        output.push_str(&format!(
-            "| {} | {} | {} | ✅ Decided |\n",
-            entry.timestamp, entry.author, escaped_message
+        rewritten.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            entry.timestamp,
+            entry.author,
+            escaped_message,
+            decision_status_label(&entry)
         ));
     }
 
-    fs::write(markdown_path, output)?;
+    fs::write(markdown_path, rewritten)?;
     Ok(markdown_path.to_path_buf())
 }
 
@@ -428,6 +485,10 @@ pub fn parse_log_line(line: &str) -> Option<Decision> {
         message,
         category: DecisionCategory::General,
         optional_tags: Vec::new(),
+        status: DecisionStatus::Accepted,
+        review_due: default_review_due(),
+        supersedes: None,
+        superseded_by: None,
     })
 }
 
@@ -542,6 +603,85 @@ pub fn read_decision_entries() -> Result<Vec<Decision>, io::Error> {
         .into_iter()
         .map(|entry| entry.decision)
         .collect())
+}
+
+pub fn find_decision_file(id: &str) -> Result<Option<DecisionFile>, io::Error> {
+    Ok(read_decision_files()?
+        .into_iter()
+        .find(|entry| entry.decision.id == id))
+}
+
+pub fn deprecate_decision(id: &str) -> Result<bool, io::Error> {
+    let Some(mut entry) = find_decision_file(id)? else {
+        return Ok(false);
+    };
+    entry.decision.status = DecisionStatus::Deprecated;
+    write_decision_at_path(&entry.path, &entry.decision)?;
+    export_markdown()?;
+    Ok(true)
+}
+
+pub fn supersede_decision(old_id: &str, new_id: &str) -> Result<bool, io::Error> {
+    let Some(mut entry) = find_decision_file(old_id)? else {
+        return Ok(false);
+    };
+    entry.decision.status = DecisionStatus::Superseded;
+    entry.decision.superseded_by = Some(new_id.to_string());
+    write_decision_at_path(&entry.path, &entry.decision)?;
+    Ok(true)
+}
+
+pub fn is_stale(decision: &Decision) -> bool {
+    if decision.status != DecisionStatus::Accepted {
+        return false;
+    }
+
+    DateTime::parse_from_rfc3339(&decision.review_due)
+        .map(|review_due| review_due.with_timezone(&Local) < Local::now())
+        .unwrap_or(false)
+}
+
+pub fn decision_status_label(decision: &Decision) -> &'static str {
+    match decision.status {
+        DecisionStatus::Proposed => "Proposed",
+        DecisionStatus::Deprecated => "Deprecated",
+        DecisionStatus::Superseded => "Superseded",
+        DecisionStatus::Accepted if is_stale(decision) => "Stale",
+        DecisionStatus::Accepted => "Accepted",
+    }
+}
+
+pub struct DecisionHealthStats {
+    pub healthy: usize,
+    pub unhealthy: usize,
+    pub ratio: f64,
+}
+
+pub fn health_stats() -> Result<DecisionHealthStats, io::Error> {
+    let entries = read_decision_entries()?;
+    let mut healthy = 0usize;
+    let mut unhealthy = 0usize;
+
+    for decision in entries {
+        match decision.status {
+            DecisionStatus::Accepted if !is_stale(&decision) => healthy += 1,
+            DecisionStatus::Superseded => {}
+            _ => unhealthy += 1,
+        }
+    }
+
+    let total = healthy + unhealthy;
+    let ratio = if total == 0 {
+        100.0
+    } else {
+        (healthy as f64 / total as f64) * 100.0
+    };
+
+    Ok(DecisionHealthStats {
+        healthy,
+        unhealthy,
+        ratio,
+    })
 }
 
 pub fn count_log_entries(path: &Path) -> Result<usize, io::Error> {
@@ -1126,6 +1266,10 @@ mod tests {
             message: "Ship A | B test".to_string(),
             category: DecisionCategory::General,
             optional_tags: Vec::new(),
+            status: DecisionStatus::Accepted,
+            review_due: "2027-04-14T12:00:00+00:00".to_string(),
+            supersedes: None,
+            superseded_by: None,
         };
 
         append_markdown_row(&path, &entry).expect("should append markdown row");
@@ -1158,6 +1302,10 @@ mod tests {
             message: "Ship it".to_string(),
             category: DecisionCategory::Architecture,
             optional_tags: vec!["rust".to_string(), "perf".to_string()],
+            status: DecisionStatus::Accepted,
+            review_due: "2027-04-14T12:00:00+00:00".to_string(),
+            supersedes: None,
+            superseded_by: None,
         };
         let line = serde_json::to_string(&entry).expect("should serialize");
         let parsed = parse_log_line(&line).expect("should parse json");
@@ -1177,6 +1325,10 @@ mod tests {
             message: "Ship it".to_string(),
             category: DecisionCategory::General,
             optional_tags: Vec::new(),
+            status: DecisionStatus::Accepted,
+            review_due: "2027-04-14T12:00:00+00:00".to_string(),
+            supersedes: None,
+            superseded_by: None,
         };
         let second = Decision {
             id: "def67890".to_string(),
@@ -1186,6 +1338,10 @@ mod tests {
             message: "Use A | B".to_string(),
             category: DecisionCategory::General,
             optional_tags: Vec::new(),
+            status: DecisionStatus::Accepted,
+            review_due: "2027-04-15T08:00:00+00:00".to_string(),
+            supersedes: None,
+            superseded_by: None,
         };
         write_decision_at_path(&decisions_dir().join("20260414120000_abc12345.json"), &first)
             .expect("should write decision");
@@ -1196,8 +1352,8 @@ mod tests {
 
         let content = fs::read_to_string(&md_path).expect("should read markdown");
         assert!(content.starts_with(DECISIONS_MD_HEADER));
-        assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship it | ✅ Decided |"));
-        assert!(content.contains("| 2026-04-15 08:00:00 | lex | Use A \\| B | ✅ Decided |"));
+        assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship it | Accepted |"));
+        assert!(content.contains("| 2026-04-15 08:00:00 | lex | Use A \\| B | Accepted |"));
 
         fs::remove_dir_all(decisions_dir()).ok();
         fs::remove_file(md_path).ok();
@@ -1237,6 +1393,10 @@ mod tests {
                 message: "A".to_string(),
                 category: DecisionCategory::General,
                 optional_tags: Vec::new(),
+                status: DecisionStatus::Accepted,
+                review_due: "2027-04-14T12:00:00+00:00".to_string(),
+                supersedes: None,
+                superseded_by: None,
             },
         )
         .expect("should write decision");
@@ -1250,6 +1410,10 @@ mod tests {
                 message: "B".to_string(),
                 category: DecisionCategory::General,
                 optional_tags: Vec::new(),
+                status: DecisionStatus::Accepted,
+                review_due: "2027-04-15T12:00:00+00:00".to_string(),
+                supersedes: None,
+                superseded_by: None,
             },
         )
         .expect("should write decision");

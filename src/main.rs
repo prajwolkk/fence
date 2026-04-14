@@ -39,14 +39,20 @@ enum Commands {
         category: Option<String>,
         #[arg(short, long)]
         tags: Option<String>,
+        #[arg(long)]
+        replaces: Option<String>,
     },
     Amend,
+    Deprecate {
+        id: String,
+    },
     List,
     Search { keyword: String },
     Check,
     Export,
     Browse,
     Site,
+    Stats,
     Sentinel {
         #[command(subcommand)]
         command: SentinelCommands,
@@ -72,14 +78,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             message,
             category,
             tags,
+            replaces,
         } => {
             let category = parse_category(category);
             let tags = parse_tags(tags);
-            FenceManager::record_with_metadata(&message, category, tags)?;
+            FenceManager::record_with_options(&message, category, tags, replaces)?;
             println!("🚀 Decision recorded and DECISIONS.md updated!");
         }
         Commands::Amend => {
             run_amend()?;
+        }
+        Commands::Deprecate { id } => {
+            if fence::deprecate_decision(&id)? {
+                println!("Decision deprecated.");
+            } else {
+                println!("Decision not found: {id}");
+                process::exit(1);
+            }
         }
         Commands::List => {
             println!("\n📖 --- DECISION HISTORY ---");
@@ -121,6 +136,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Site => {
             let path = fence::generate_site()?;
             println!("Generated site at {}", path.display());
+        }
+        Commands::Stats => {
+            let stats = fence::health_stats()?;
+            let count = fence::log_entry_count()?;
+            println!("Decisions: {count}");
+            println!("Healthy: {}", stats.healthy);
+            println!("Needs attention: {}", stats.unhealthy);
+            println!("Health Ratio: {:.1}%", stats.ratio);
         }
         Commands::Sentinel { command } => match command {
             SentinelCommands::Init => {
