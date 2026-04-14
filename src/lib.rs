@@ -608,6 +608,38 @@ pub fn git_remote_platform() -> Option<String> {
     }
 }
 
+pub fn detect_stack() -> Option<String> {
+    if Path::new("Cargo.toml").exists() {
+        return Some("Rust".to_string());
+    }
+    if Path::new("pubspec.yaml").exists() {
+        return Some("Flutter".to_string());
+    }
+    if Path::new("package.json").exists() {
+        return Some("Node".to_string());
+    }
+    None
+}
+
+pub fn default_monitored_paths() -> Vec<String> {
+    let mut paths = Vec::new();
+    if Path::new("Cargo.toml").exists() {
+        paths.push("Cargo.toml".to_string());
+        paths.push("src".to_string());
+    }
+    if Path::new("pubspec.yaml").exists() {
+        paths.push("pubspec.yaml".to_string());
+        paths.push("lib".to_string());
+    }
+    if Path::new("package.json").exists() {
+        paths.push("package.json".to_string());
+        paths.push("src".to_string());
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 pub fn git_hooks_path() -> PathBuf {
     Path::new(".git").join("hooks")
 }

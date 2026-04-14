@@ -226,7 +226,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
     };
 
     let mut config = FenceConfig::new(project_name, mode, notifications, team_settings);
-    let suggested_paths = detect_monitored_paths();
+    let suggested_paths = fence::default_monitored_paths();
     let suggested_text = if suggested_paths.is_empty() {
         "".to_string()
     } else {
@@ -277,7 +277,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
 
     if git_present {
         if let Some(platform) = git_remote_platform() {
-            let stack_label = detect_stack_label().unwrap_or_else(|| "Unknown".to_string());
+            let stack_label = fence::detect_stack().unwrap_or_else(|| "Unknown".to_string());
             let setup_sentinel = Confirm::new()
                 .with_prompt(format!(
                     "I detected a {stack_label} project on {platform}. Enable Sentinel CI/CD automation? (y/N)"
@@ -374,37 +374,6 @@ fn parse_tags(value: Option<String>) -> Vec<String> {
         .collect()
 }
 
-fn detect_monitored_paths() -> Vec<String> {
-    let mut paths = Vec::new();
-    if Path::new("Cargo.toml").exists() {
-        paths.push("Cargo.toml".to_string());
-        paths.push("src".to_string());
-    }
-    if Path::new("pubspec.yaml").exists() {
-        paths.push("pubspec.yaml".to_string());
-        paths.push("lib".to_string());
-    }
-    if Path::new("package.json").exists() {
-        paths.push("package.json".to_string());
-        paths.push("src".to_string());
-    }
-    paths.sort();
-    paths.dedup();
-    paths
-}
-
-fn detect_stack_label() -> Option<String> {
-    if Path::new("Cargo.toml").exists() {
-        return Some("Rust".to_string());
-    }
-    if Path::new("pubspec.yaml").exists() {
-        return Some("Flutter".to_string());
-    }
-    if Path::new("package.json").exists() {
-        return Some("Node".to_string());
-    }
-    None
-}
 
 fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
     match platform {
