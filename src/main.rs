@@ -49,11 +49,16 @@ enum Commands {
         #[command(subcommand)]
         command: SentinelCommands,
     },
+    Badge,
 }
 
 #[derive(Subcommand)]
 enum SentinelCommands {
     Init,
+    Check {
+        #[arg(long)]
+        base: Option<String>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -122,7 +127,41 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 println!("Sentinel setup is not yet implemented in this build.");
             }
+            SentinelCommands::Check { base } => {
+                if !has_git_directory() {
+                    println!(
+                        "The Sentinel requires a Git repository. Please run git init first."
+                    );
+                    process::exit(1);
+                }
+                let result = fence::sentinel_check(base)?;
+                if result.bypassed {
+                    println!("✅ Sentinel bypassed for latest commit.");
+                    return Ok(());
+                }
+                if result.changed_files == 0 {
+                    println!("✅ No monitored changes detected.");
+                    return Ok(());
+                }
+                if result.decision_found {
+                    println!(
+                        "✅ Decision found for {} modified files.",
+                        result.changed_files
+                    );
+                } else {
+                    println!("❌ Architectural change detected without log.");
+                    process::exit(1);
+                }
+            }
         },
+        Commands::Badge => {
+            let count = fence::log_entry_count()?;
+            let snippet = format!(
+                "![Fence Decisions](https://img.shields.io/badge/decisions-{}-blue)",
+                count
+            );
+            println!("{snippet}");
+        }
     }
 
     Ok(())

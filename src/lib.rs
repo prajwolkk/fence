@@ -472,6 +472,11 @@ pub fn check_sync() -> Result<bool, io::Error> {
     Ok(log_count == markdown_count)
 }
 
+pub fn log_entry_count() -> Result<usize, io::Error> {
+    let config = load_runtime_config();
+    count_log_entries(Path::new(&config.log_path))
+}
+
 pub fn dispatch_notifications(config: &FenceConfig, entry: &Decision) {
     if let Some(notifications) = &config.notifications {
         if let Some(webhook_url) = notifications.webhook_url.as_deref() {
@@ -505,6 +510,63 @@ fn git_working_matches_index(path: &Path) -> Result<bool, io::Error> {
     }
 }
 
+fn git_head_message() -> Option<String> {
+    let output = Command::new("git")
+        .args(["log", "-1", "--pretty=%B"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_base_branch() -> Option<String> {
+    let candidates = [
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/master",
+        "refs/heads/main",
+        "refs/heads/master",
+    ];
+    for candidate in candidates {
+        if git_ref_exists(candidate) {
+            return Some(candidate.replace("refs/remotes/origin/", "origin/").replace("refs/heads/", ""));
+        }
+    }
+    None
+}
+
+fn git_ref_exists(reference: &str) -> bool {
+    let status = Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", reference])
+        .status();
+    matches!(status, Ok(status) if status.success())
+}
+
+fn git_diff_files(base: &str) -> Result<Vec<String>, io::Error> {
+    let output = Command::new("git")
+        .args(["diff", "--name-only", &format!("{base}..HEAD")])
+        .output()?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect())
+}
+
+fn is_monitored_path(path: &str, monitored: &[String]) -> bool {
+    monitored.iter().any(|entry| {
+        if entry.is_empty() {
+            return false;
+        }
+        path == entry || path.starts_with(&format!("{entry}/"))
+    })
+}
+
 pub fn has_git_directory() -> bool {
     Path::new(".git").exists()
 }
@@ -535,6 +597,55 @@ pub fn git_remote_platform() -> Option<String> {
 
 pub fn git_hooks_path() -> PathBuf {
     Path::new(".git").join("hooks")
+}
+
+pub struct SentinelCheckResult {
+    pub bypassed: bool,
+    pub changed_files: usize,
+    pub decision_found: bool,
+}
+
+pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult, io::Error> {
+    let config = load_runtime_config();
+    let monitored = config.monitored_paths;
+    let log_path = config.log_path;
+
+    let latest_message = git_head_message().unwrap_or_default();
+    let lower = latest_message.to_lowercase();
+    if lower.contains("[skip fence]") || lower.contains("nolog") {
+        return Ok(SentinelCheckResult {
+            bypassed: true,
+            changed_files: 0,
+            decision_found: true,
+        });
+    }
+
+    let base = base_branch
+        .or_else(git_base_branch)
+        .unwrap_or_else(|| "HEAD~1".to_string());
+
+    let diff_files = git_diff_files(&base)?;
+    let monitored_changes: Vec<String> = diff_files
+        .iter()
+        .filter(|path| is_monitored_path(path, &monitored))
+        .cloned()
+        .collect();
+
+    if monitored_changes.is_empty() {
+        return Ok(SentinelCheckResult {
+            bypassed: false,
+            changed_files: 0,
+            decision_found: true,
+        });
+    }
+
+    let decision_found = diff_files.iter().any(|path| path == &log_path);
+
+    Ok(SentinelCheckResult {
+        bypassed: false,
+        changed_files: monitored_changes.len(),
+        decision_found,
+    })
 }
 
 pub fn ensure_gitignore_contains(entry: &str) -> Result<(), io::Error> {
