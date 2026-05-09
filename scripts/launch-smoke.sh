@@ -69,6 +69,18 @@ print(data[0]["id"])
 PY
 }
 
+json_field() {
+  local json="$1"
+  local expr="$2"
+  JSON_INPUT="${json}" EXPR="${expr}" python3 - <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["JSON_INPUT"])
+print(eval(os.environ["EXPR"], {"data": data}))
+PY
+}
+
 git_init_repo() {
   local repo="$1"
   mkdir -p "${repo}/src"
@@ -154,6 +166,7 @@ mkdir -p "${NO_GIT}"
   "${FENCE}" site
   [[ -f fence-site/index.html ]] || fail "static site was not generated"
   require_contains "$(cat fence-site/index.html)" "Fence Decisions"
+  require_contains "$(cat fence-site/index.html)" "const writable = false"
 
   port="$(free_port)"
   "${FENCE}" serve --port "${port}" >server.log 2>&1 &
@@ -161,10 +174,22 @@ mkdir -p "${NO_GIT}"
   echo "${SERVER_PID}" >"${TMP_ROOT}/server.pid"
   sleep 1
   require_contains "$(curl -s "http://127.0.0.1:${port}/")" "Fence Decisions"
+  require_contains "$(curl -s "http://127.0.0.1:${port}/")" "const writable = true"
   json_assert "$(curl -s "http://127.0.0.1:${port}/api/decisions")" "len(data) == 1"
   json_assert "$(curl -s "http://127.0.0.1:${port}/api/stats")" "data['total'] == 1"
   require_contains "$(curl -s "http://127.0.0.1:${port}/health")" '"status":"ok"'
   [[ "$(curl_status "http://127.0.0.1:${port}/missing")" == "404" ]] || fail "missing route did not return 404"
+  edit_response="$(curl -s -X POST "http://127.0.0.1:${port}/api/decisions/${id}/edit" -H 'Content-Type: application/json' -d '{"title":"Local cache v2","optional_tags":["cache","sqlite"],"owner":"@solo","reviewer":"@review","rationale":"Still local first","consequences":"Keep migrations small","review_due":"2027-01-01"}')"
+  json_assert "${edit_response}" "data['title'] == 'Local cache v2' and data['reviewer'] == '@review'"
+  review_response="$(curl -s -X POST "http://127.0.0.1:${port}/api/decisions/${id}/review" -H 'Content-Type: application/json' -d '{"review_due":"2027-06-01"}')"
+  json_assert "${review_response}" "data['review_due'].startswith('2027-06-01')"
+  approve_response="$(curl -s -X POST "http://127.0.0.1:${port}/api/decisions/${id}/approve" -H 'Content-Type: application/json' -d '{}')"
+  json_assert "${approve_response}" "data['status'] == 'approved' and data['approved_by']"
+  replace_response="$(curl -s -X POST "http://127.0.0.1:${port}/api/decisions/${id}/replace" -H 'Content-Type: application/json' -d '{"message":"Replace SQLite cache with local file snapshots","title":"Snapshot cache","optional_tags":["cache"],"review_due":"2027-12-31"}')"
+  replacement_id="$(json_field "${replace_response}" "data['id']")"
+  json_assert "${replace_response}" "data['supersedes'] == '${id}'"
+  deprecate_response="$(curl -s -X POST "http://127.0.0.1:${port}/api/decisions/${replacement_id}/deprecate" -H 'Content-Type: application/json' -d '{}')"
+  json_assert "${deprecate_response}" "data['ok'] is True"
   if command -v google-chrome >/dev/null 2>&1; then
     require_contains "$(google-chrome --headless --disable-gpu --no-sandbox --dump-dom "http://127.0.0.1:${port}/" 2>/dev/null)" "Fence Decisions"
   fi
@@ -193,7 +218,11 @@ git_init_repo "${SOLO_GIT}"
   list_json="$("${FENCE}" list --json)"
   id="$(first_decision_id "${list_json}")"
   json_assert "$("${FENCE}" stale --json)" "len(data) == 1 and data[0]['id'] == '${id}'"
-  "${FENCE}" edit "${id}" \
+  require_contains "$("${FENCE}" pick auth)" "${id}"
+  require_contains "$("${FENCE}" review-due)" "${id}"
+  require_contains "$("${FENCE}" owners)" "@auth"
+  require_contains "$("${FENCE}" team status)" "Overdue reviews"
+  "${FENCE}" edit --search Argon2id \
     --title "Argon2id password hashing" \
     --message "Adopt Argon2id for password hashing and credential hardening" \
     --category security \
@@ -204,8 +233,10 @@ git_init_repo "${SOLO_GIT}"
     --link https://github.com/acme/app/pull/8
   require_contains "$("${FENCE}" show "${id}")" "Argon2id password hashing"
   "${FENCE}" review "${id}" --review-due 2027-06-01
+  "${FENCE}" approve --search Argon2id
+  require_contains "$("${FENCE}" show "${id}")" "Approved"
   json_assert "$("${FENCE}" stale --json)" "len(data) == 0"
-  "${FENCE}" deprecate "${id}"
+  "${FENCE}" deprecate --search Argon2id
   require_contains "$("${FENCE}" show "${id}")" "Deprecated"
   if "${FENCE}" show does-not-exist >/tmp/fence-smoke-missing.txt 2>&1; then
     fail "show should fail for a missing decision"
@@ -222,7 +253,7 @@ git_init_repo "${TEAM}"
   "${FENCE}" init --team --yes
   "${FENCE}" sentinel init --github --yes
   [[ -f .github/workflows/fence.yml ]] || fail "GitHub Sentinel workflow missing"
-  require_contains "$(cat .github/workflows/fence.yml)" "GITHUB_STEP_SUMMARY"
+  require_contains "$(cat .github/workflows/fence.yml)" "prajwolkk/fence@v0.1.0"
 
   cat >src/lib.rs <<'EOF'
 pub fn runtime_name() -> &'static str {
