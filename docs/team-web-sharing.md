@@ -18,7 +18,7 @@ Publish `fence-site/` anywhere that can serve static HTML:
 - S3 or compatible object storage
 - An internal docs server
 
-This is the recommended v1 team-sharing flow because it is simple, auditable, and does not require running a long-lived Fence service.
+This is the recommended v1 team-sharing flow because it is simple, auditable, read-only, and does not require running a long-lived Fence service.
 
 ## Private Local Sharing
 
@@ -28,7 +28,7 @@ On a trusted internal network or VPN:
 fence serve --host 0.0.0.0 --port 7878
 ```
 
-Then share the machine URL with teammates. Do not expose this directly to the public internet in v1; `fence serve` is intentionally a lightweight local reader, not an authenticated multi-user web app.
+Then share the machine URL with teammates. Do not expose this directly to the public internet in v1; `fence serve` is intentionally a lightweight writable local control panel, not an authenticated multi-user web app.
 
 ## What Comes Later
 

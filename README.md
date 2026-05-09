@@ -90,12 +90,15 @@ fence log "Adopt signed audit events" \
 
 Records a structured decision and updates `DECISIONS.md`.
 
+Owner and reviewer values are labels in v1. Use GitHub handles, team handles, or internal aliases such as `@platform`, `@security`, `@prajwol`, or `backend`.
+
 ```sh
 fence list
 fence list --json
 fence show <id>
 fence show <id> --json
 fence search billing
+fence pick billing
 fence ask "why did we choose postgres?"
 fence agent-check --staged
 ```
@@ -105,8 +108,11 @@ Lists, opens, searches, asks lightweight architectural-memory questions, and giv
 ```sh
 fence amend
 fence edit <id>
+fence edit --search billing --reviewer @platform
 fence review <id> --review-due 2026-12-31
+fence approve <id>
 fence deprecate <id>
+fence deprecate --search redis
 fence log "Replace legacy queue with durable queue" --replaces <id>
 ```
 
@@ -149,9 +155,9 @@ fence serve
 fence open
 ```
 
-Starts the same searchable UI on localhost. Defaults to `http://127.0.0.1:7878`. `fence open` starts the server and opens the browser.
+Starts the same searchable UI on localhost. Defaults to `http://127.0.0.1:7878`. `fence open` starts the server and opens the browser. `fence serve` is writable: edit, review, approve, deprecate, and supersede decisions from the browser.
 
-Teams can publish `fence-site/` to GitHub Pages, Netlify, Vercel, S3, or an internal static host. For private internal viewing, run `fence serve --host 0.0.0.0 --port 7878` behind a VPN or trusted network only. Fence v1 is local/static, not a hosted multi-user SaaS.
+Teams can publish read-only `fence-site/` to GitHub Pages, Netlify, Vercel, S3, or an internal static host. For private internal editing, run `fence serve --host 0.0.0.0 --port 7878` behind a VPN or trusted network only. Fence v1 is local/static, not a hosted multi-user SaaS.
 
 ```sh
 fence completions zsh
@@ -188,11 +194,14 @@ Each decision has:
 - `links`
 - `owner`
 - `reviewer`
+- `approved_by`
+- `approved_at`
 
 Statuses:
 
 - `Accepted`: active and within review window.
-- `Stale`: accepted, but past its review date.
+- `Approved`: active and explicitly approved by a reviewer.
+- `Stale`: accepted or approved, but past its review date.
 - `Deprecated`: intentionally retired.
 - `Superseded`: replaced by a newer decision.
 - `Proposed`: supported by the schema for future workflows.
@@ -236,8 +245,15 @@ Use bypasses sparingly. The point is not bureaucracy; the point is keeping inten
 
 Fence ships with CI and release workflows in `.github/workflows`.
 
-There is also a sample Sentinel workflow at [docs/examples/fence-sentinel.github-actions.yml](docs/examples/fence-sentinel.github-actions.yml).
-For PR comments, use [docs/examples/fence-sentinel-pr-comment.github-actions.yml](docs/examples/fence-sentinel-pr-comment.github-actions.yml).
+There is also a reusable GitHub Action:
+
+```yaml
+- uses: prajwolkk/fence@v0.1.0
+  with:
+    comment: "true"
+```
+
+See [docs/sentinel-pr-guide.md](docs/sentinel-pr-guide.md), [docs/examples/fence-action.github-actions.yml](docs/examples/fence-action.github-actions.yml), and [docs/examples/fence-sentinel.github-actions.yml](docs/examples/fence-sentinel.github-actions.yml).
 
 To publish binaries, tag the release:
 

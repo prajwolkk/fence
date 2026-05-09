@@ -15,6 +15,8 @@ sentinel_enabled = true
 sentinel_platform = "GitHub"
 enforcement_level = "Blocking"
 threshold = 10
+default_owner = "@platform"
+default_reviewer = "@security"
 
 [scoring]
 "Cargo.toml" = 10
@@ -30,6 +32,8 @@ threshold = 10
 - `enforcement_level`: `Blocking` exits non-zero when a required decision is missing; `Warning` reports without blocking.
 - `threshold`: score above which Sentinel requires a decision.
 - `scoring`: weighted path patterns for deciding whether a code change is architectural enough to require a decision.
+- `default_owner`: optional owner label for new decisions when `--owner` is omitted.
+- `default_reviewer`: optional reviewer label for new decisions when `--reviewer` is omitted.
 
 ## Validation
 
@@ -44,3 +48,14 @@ Fence reports invalid globs, empty monitored path entries, and scoring rules wit
 ## Team Defaults
 
 For team repos, track both `.fence/decisions` and `DECISIONS.md` in Git. That keeps reviewable intent next to the code change that needs it.
+
+Owner and reviewer values are labels in v1. They can be GitHub handles, team handles, or internal aliases:
+
+```sh
+--owner @platform
+--reviewer @security
+--owner @prajwol
+--reviewer backend
+```
+
+Fence does not validate GitHub handles yet.
