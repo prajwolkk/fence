@@ -1,0 +1,17 @@
+{
+  "id": "1111aaaa",
+  "timestamp": "2026-05-09 10:00:00",
+  "author": "praj",
+  "branch": "demo/change-runtime",
+  "message": "Adopt Tokio runtime for async background jobs",
+  "category": "Architecture",
+  "optional_tags": ["runtime", "async", "sentinel-demo"],
+  "status": "accepted",
+  "review_due": "2026-12-31T00:00:00+00:00",
+  "title": "Tokio runtime",
+  "rationale": "Background workers need a maintained async runtime.",
+  "consequences": "Runtime upgrades become part of platform maintenance.",
+  "links": ["https://github.com/acme/sample-service/pull/42"],
+  "owner": "@platform",
+  "reviewer": "@security"
+}

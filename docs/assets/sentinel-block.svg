@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">Fence Sentinel blocking a PR</title>
+  <desc id="desc">A terminal-style screenshot showing Fence Sentinel blocking a pull request because a decision is missing.</desc>
+  <rect width="1120" height="520" fill="#111418"/>
+  <rect x="56" y="54" width="1008" height="410" rx="10" fill="#191f27" stroke="#313946"/>
+  <text x="84" y="100" font-family="SFMono-Regular, Consolas, monospace" font-size="17" fill="#edf2f7">$ fence sentinel check --base origin/main</text>
+  <text x="84" y="152" font-family="SFMono-Regular, Consolas, monospace" font-size="17" fill="#ff778c">Changed architectural files:</text>
+  <text x="84" y="188" font-family="SFMono-Regular, Consolas, monospace" font-size="17" fill="#edf2f7">- Cargo.toml (+10, score 10)</text>
+  <text x="84" y="224" font-family="SFMono-Regular, Consolas, monospace" font-size="17" fill="#edf2f7">- src/lib.rs (+2, score 2)</text>
+  <text x="84" y="286" font-family="SFMono-Regular, Consolas, monospace" font-size="17" fill="#a8b3c2">Required score: &gt;10</text>
+  <text x="84" y="322" font-family="SFMono-Regular, Consolas, monospace" font-size="17" fill="#f0b84a">Current score: 12</text>
+  <text x="84" y="358" font-family="SFMono-Regular, Consolas, monospace" font-size="17" fill="#ff778c">Missing: .fence/decisions change</text>
+  <text x="84" y="418" font-family="SFMono-Regular, Consolas, monospace" font-size="15" fill="#70a5ff">Run fence log "why this change is intentional" and commit the generated decision file.</text>
+</svg>

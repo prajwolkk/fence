@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title desc">
+  <title id="title">Fence browse terminal UI</title>
+  <desc id="desc">A terminal-style screenshot of the Fence browse user interface.</desc>
+  <rect width="1120" height="620" fill="#111418"/>
+  <rect x="48" y="46" width="1024" height="528" rx="10" fill="#191f27" stroke="#313946"/>
+  <text x="76" y="88" font-family="SFMono-Regular, Consolas, monospace" font-size="18" fill="#edf2f7">Fence Browse</text>
+  <text x="76" y="122" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#a8b3c2">Search: sentinel</text>
+  <rect x="76" y="150" width="968" height="56" rx="8" fill="#242b35" stroke="#70a5ff"/>
+  <text x="96" y="176" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#70a5ff">9b0f65dc  [Architecture] Accepted  2026-05-09  praj</text>
+  <text x="96" y="196" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#edf2f7">Sentinel CI requires decisions for scored architecture changes</text>
+  <rect x="76" y="220" width="968" height="56" rx="8" fill="#1d2430" stroke="#313946"/>
+  <text x="96" y="246" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#a8b3c2">2e1ab777  [Technical] Accepted  2026-05-09  praj</text>
+  <text x="96" y="266" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#edf2f7">Serve decision UI locally with fence serve</text>
+  <rect x="76" y="290" width="968" height="56" rx="8" fill="#1d2430" stroke="#313946"/>
+  <text x="96" y="316" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#a8b3c2">d44c02ac  [Product] Stale  2026-05-09  praj</text>
+  <text x="96" y="336" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#edf2f7">Track review dates for product-impacting decisions</text>
+  <line x1="76" y1="388" x2="1044" y2="388" stroke="#313946"/>
+  <text x="76" y="424" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#edf2f7">ID: 9b0f65dc</text>
+  <text x="76" y="452" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#a8b3c2">Status: Accepted   Category: Architecture   Tags: ci,sentinel</text>
+  <text x="76" y="480" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#a8b3c2">Review Due: 2026-12-31T00:00:00+00:00</text>
+  <text x="76" y="532" font-family="SFMono-Regular, Consolas, monospace" font-size="13" fill="#70a5ff">↑/↓ move   enter details   / search   q quit</text>
+</svg>

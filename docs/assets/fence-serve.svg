@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="680" viewBox="0 0 1120 680" role="img" aria-labelledby="title desc">
+  <title id="title">Fence serve web UI</title>
+  <desc id="desc">A dashboard-style screenshot of the Fence web UI with summary cards, filters, and decision cards.</desc>
+  <rect width="1120" height="680" fill="#f6f7f9"/>
+  <text x="56" y="72" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700" fill="#17202a">Fence Decisions</text>
+  <text x="56" y="104" font-family="Inter, Arial, sans-serif" font-size="16" fill="#5f6b7a">Architectural intent, review health, and decision history.</text>
+  <rect x="56" y="138" width="184" height="86" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <rect x="256" y="138" width="184" height="86" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <rect x="456" y="138" width="184" height="86" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <rect x="656" y="138" width="184" height="86" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <rect x="856" y="138" width="208" height="86" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="76" y="170" font-family="Inter, Arial, sans-serif" font-size="14" fill="#5f6b7a">Total decisions</text>
+  <text x="76" y="205" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="700" fill="#17202a">10</text>
+  <text x="276" y="170" font-family="Inter, Arial, sans-serif" font-size="14" fill="#5f6b7a">Healthy</text>
+  <text x="276" y="205" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="700" fill="#0f8a5f">8</text>
+  <text x="476" y="170" font-family="Inter, Arial, sans-serif" font-size="14" fill="#5f6b7a">Needs attention</text>
+  <text x="476" y="205" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="700" fill="#b7791f">1</text>
+  <text x="676" y="170" font-family="Inter, Arial, sans-serif" font-size="14" fill="#5f6b7a">Stale</text>
+  <text x="676" y="205" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="700" fill="#b7791f">1</text>
+  <text x="876" y="170" font-family="Inter, Arial, sans-serif" font-size="14" fill="#5f6b7a">Deprecated / superseded</text>
+  <text x="876" y="205" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="700" fill="#697386">0 / 1</text>
+  <rect x="56" y="254" width="444" height="46" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="78" y="283" font-family="Inter, Arial, sans-serif" font-size="15" fill="#5f6b7a">Search decisions</text>
+  <rect x="516" y="254" width="132" height="46" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="536" y="283" font-family="Inter, Arial, sans-serif" font-size="15" fill="#17202a">Status</text>
+  <rect x="664" y="254" width="142" height="46" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="684" y="283" font-family="Inter, Arial, sans-serif" font-size="15" fill="#17202a">Category</text>
+  <rect x="822" y="254" width="114" height="46" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="842" y="283" font-family="Inter, Arial, sans-serif" font-size="15" fill="#17202a">Tag</text>
+  <rect x="952" y="254" width="112" height="46" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="972" y="283" font-family="Inter, Arial, sans-serif" font-size="15" fill="#17202a">Newest</text>
+  <rect x="56" y="334" width="1008" height="142" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="78" y="370" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#17202a">9b0f65dc</text>
+  <rect x="166" y="350" width="74" height="28" rx="8" fill="#eef2f6" stroke="#dfe4ea"/>
+  <text x="183" y="369" font-family="Inter, Arial, sans-serif" font-size="13" fill="#17202a">Copy ID</text>
+  <rect x="254" y="350" width="78" height="28" rx="14" fill="#e9f7f0"/>
+  <text x="274" y="369" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f8a5f">Accepted</text>
+  <text x="78" y="415" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" fill="#17202a">Sentinel CI requires decisions for scored architecture changes</text>
+  <text x="78" y="446" font-family="Inter, Arial, sans-serif" font-size="15" fill="#5f6b7a">Fence blocks PRs when meaningful changes land without recorded intent.</text>
+  <rect x="56" y="500" width="1008" height="112" rx="8" fill="#fff" stroke="#dfe4ea"/>
+  <text x="78" y="544" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" fill="#17202a">Structured JSON decision store</text>
+  <text x="78" y="574" font-family="Inter, Arial, sans-serif" font-size="15" fill="#5f6b7a">Search, filters, linked supersedes, and review health are served locally.</text>
+</svg>
