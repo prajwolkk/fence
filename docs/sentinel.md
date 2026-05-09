@@ -5,10 +5,11 @@ Sentinel is Fence's CI and local enforcement layer. It compares the current bran
 ## Local Commands
 
 ```sh
-fence sentinel init
+fence sentinel init --github --yes
 fence sentinel validate
 fence sentinel check --base origin/main
 fence sentinel check --base origin/main --json
+fence sentinel check --base origin/main --markdown
 fence sentinel explain --base origin/main
 ```
 
@@ -52,7 +53,14 @@ Use the release binary in CI:
     fence --version
 
 - name: Fence Sentinel Check
-  run: fence sentinel check --base origin/${{ github.base_ref || 'main' }}
+  shell: bash
+  run: |
+    BASE="origin/${{ github.base_ref || 'main' }}"
+    set +e
+    fence sentinel check --base "$BASE" --markdown | tee fence-sentinel.md
+    status=${PIPESTATUS[0]}
+    cat fence-sentinel.md >> "$GITHUB_STEP_SUMMARY"
+    exit "$status"
 ```
 
 See [examples/fence-sentinel.github-actions.yml](examples/fence-sentinel.github-actions.yml).

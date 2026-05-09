@@ -4,6 +4,16 @@ This is the first launch demo flow: a pull request changes `Cargo.toml` without 
 
 ## Setup
 
+Fast path:
+
+```sh
+fence demo
+cd fence-demo
+fence sentinel check --base HEAD~1
+```
+
+Manual path:
+
 ```sh
 fence init --team --yes
 git checkout -b demo/change-runtime

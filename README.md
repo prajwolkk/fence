@@ -26,6 +26,7 @@ From this repository:
 
 ```sh
 cargo build --release
+./target/release/fence demo
 ./target/release/fence init --yes
 ./target/release/fence log "Use Postgres for audit-safe persistence" -c architecture -t database,audit \
   --title "Audit persistence" \
@@ -82,9 +83,10 @@ fence list --json
 fence show <id>
 fence show <id> --json
 fence search billing
+fence ask "why did we choose postgres?"
 ```
 
-Lists, opens, and searches decisions by ID, message, author, or tag.
+Lists, opens, searches, and asks lightweight architectural-memory questions over local decisions.
 
 ```sh
 fence amend
@@ -106,13 +108,21 @@ Checks generated docs and Git tracking, regenerates `DECISIONS.md`, and reports 
 
 ```sh
 fence sentinel init
+fence sentinel init --github --yes
 fence sentinel check
 fence sentinel check --json
+fence sentinel check --markdown
 fence sentinel explain --base origin/main
 fence sentinel validate
 ```
 
 Sets up CI automation and checks whether monitored code changes include a decision record.
+
+```sh
+fence demo
+```
+
+Creates a throwaway demo repo where Sentinel blocks a runtime dependency change until a decision is logged. This is the fastest way to see the full product loop.
 
 ```sh
 fence site
@@ -239,6 +249,7 @@ fence 0.1.0
 - [Sentinel](docs/sentinel.md)
 - [Web UI](docs/web-ui.md)
 - [Release checklist](docs/release-checklist.md)
+- [V1 launch checklist](docs/v1-launch-checklist.md)
 
 ## Repository Layout
 

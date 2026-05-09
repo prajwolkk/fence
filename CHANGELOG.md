@@ -18,6 +18,10 @@ First public launch candidate.
 - Non-interactive initialization with `fence init --yes`, `--team --yes`, and `--solo --yes`.
 - Shell completion generation for zsh, bash, and fish.
 - Sentinel checks for monitored architectural changes with scoring, ignored paths, validation, and explain output.
+- One-command demo repo generation with `fence demo`.
+- Local architectural-memory search preview with `fence ask`.
+- Markdown Sentinel output for GitHub step summaries.
+- Non-interactive GitHub/GitLab Sentinel setup flags.
 - GitHub/GitLab CI template generation.
 - Setup diagnostics with `fence doctor`.
 - GitHub CI and release workflows.

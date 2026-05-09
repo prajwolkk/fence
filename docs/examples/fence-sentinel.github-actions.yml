@@ -20,4 +20,11 @@ jobs:
           fence --version
 
       - name: Fence Sentinel Check
-        run: fence sentinel check --base origin/${{ github.base_ref || 'main' }}
+        shell: bash
+        run: |
+          BASE="origin/${{ github.base_ref || 'main' }}"
+          set +e
+          fence sentinel check --base "$BASE" --markdown | tee fence-sentinel.md
+          status=${PIPESTATUS[0]}
+          cat fence-sentinel.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

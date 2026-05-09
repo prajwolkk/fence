@@ -30,6 +30,8 @@ fence list --json
 fence show <id>
 fence show <id> --json
 fence search database
+fence ask "why did we choose postgres?"
+fence ask "auth owner" --json
 fence browse
 fence stats
 fence stats --json
@@ -47,15 +49,20 @@ fence serve --port 9000
 fence serve --open
 fence open
 fence badge
+fence demo
+fence demo --path /tmp/fence-demo --force
 ```
 
 ## Enforcement
 
 ```sh
 fence sentinel init
+fence sentinel init --github --yes
 fence sentinel check
 fence sentinel check --json
+fence sentinel check --markdown
 fence sentinel explain --base origin/main
+fence sentinel explain --base origin/main --markdown
 fence sentinel validate
 fence check
 ```
