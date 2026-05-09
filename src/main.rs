@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{self, Command as ProcessCommand};
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -83,6 +84,13 @@ enum Commands {
     Search {
         keyword: String,
     },
+    Ask {
+        query: String,
+        #[arg(short, long, default_value_t = 5)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     Check,
     Export,
     Migrate {
@@ -123,23 +131,40 @@ enum Commands {
     Completions {
         shell: Shell,
     },
+    Demo {
+        #[arg(long, default_value = "fence-demo")]
+        path: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
     Badge,
 }
 
 #[derive(Subcommand)]
 enum SentinelCommands {
-    Init,
+    Init {
+        #[arg(long)]
+        yes: bool,
+        #[arg(long, conflicts_with = "gitlab")]
+        github: bool,
+        #[arg(long, conflicts_with = "github")]
+        gitlab: bool,
+    },
     Check {
         #[arg(long)]
         base: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "markdown")]
         json: bool,
+        #[arg(long)]
+        markdown: bool,
     },
     Explain {
         #[arg(long)]
         base: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "markdown")]
         json: bool,
+        #[arg(long)]
+        markdown: bool,
     },
     Validate {
         #[arg(long)]
@@ -237,6 +262,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("{line}");
             }
         }
+        Commands::Ask { query, limit, json } => {
+            let results = ask_decisions(&query, limit)?;
+            if json {
+                print_json(&results)?;
+            } else {
+                print_ask_results(&query, &results);
+            }
+        }
         Commands::Check => {
             let sync = fence::sync_status()?;
             let (tracking_ok, log_status, md_status) = fence::check_tracking_integrity()?;
@@ -313,10 +346,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             run_doctor()?;
         }
         Commands::Sentinel { command } => match command {
-            SentinelCommands::Init => {
-                run_sentinel_init()?;
+            SentinelCommands::Init {
+                yes,
+                github,
+                gitlab,
+            } => {
+                run_sentinel_init(SentinelInitOptions {
+                    yes,
+                    github,
+                    gitlab,
+                })?;
             }
-            SentinelCommands::Check { base, json } => {
+            SentinelCommands::Check {
+                base,
+                json,
+                markdown,
+            } => {
                 if !has_git_directory() {
                     println!("The Sentinel requires a Git repository. Please run git init first.");
                     process::exit(1);
@@ -325,6 +370,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let enforcement = fence::load_runtime_config().enforcement_level;
                 if json {
                     print_json(&result)?;
+                    if result.missing_decision && enforcement == fence::EnforcementLevel::Blocking {
+                        process::exit(1);
+                    }
+                    return Ok(());
+                }
+                if markdown {
+                    println!("{}", sentinel_markdown_report(&result));
                     if result.missing_decision && enforcement == fence::EnforcementLevel::Blocking {
                         process::exit(1);
                     }
@@ -347,10 +399,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
-            SentinelCommands::Explain { base, json } => {
+            SentinelCommands::Explain {
+                base,
+                json,
+                markdown,
+            } => {
                 let result = fence::sentinel_explain(base)?;
                 if json {
                     print_json(&result)?;
+                } else if markdown {
+                    println!("{}", sentinel_markdown_report(&result));
                 } else {
                     print_sentinel_report(&result);
                 }
@@ -370,6 +428,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Completions { shell } => {
             let mut command = Cli::command();
             clap_complete::generate(shell, &mut command, "fence", &mut std::io::stdout());
+        }
+        Commands::Demo { path, force } => {
+            run_demo(&path, force)?;
         }
         Commands::Badge => {
             let count = fence::log_entry_count()?;
@@ -516,7 +577,7 @@ fn run_init(options: InitOptions) -> Result<(), Box<dyn Error>> {
             config.sentinel_enabled = setup_sentinel;
             if setup_sentinel {
                 config.sentinel_platform = Some(platform.clone());
-                maybe_write_ci_template(&platform)?;
+                maybe_write_ci_template(&platform, false)?;
             }
         }
 
@@ -746,6 +807,117 @@ fn run_edit(id: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct AskDecisionResult {
+    id: String,
+    score: usize,
+    title: Option<String>,
+    message: String,
+    category: String,
+    status: String,
+    author: String,
+    owner: Option<String>,
+    reviewer: Option<String>,
+    review_due: String,
+    tags: Vec<String>,
+    rationale: Option<String>,
+    consequences: Option<String>,
+    links: Vec<String>,
+}
+
+fn ask_decisions(query: &str, limit: usize) -> Result<Vec<AskDecisionResult>, Box<dyn Error>> {
+    let tokens = query
+        .split_whitespace()
+        .map(|token| token.trim().to_lowercase())
+        .filter(|token| token.len() > 1)
+        .collect::<Vec<_>>();
+
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = fence::read_log_entries()?
+        .into_iter()
+        .filter_map(|decision| {
+            let haystack = decision_search_text(&decision);
+            let score = tokens
+                .iter()
+                .map(|token| haystack.matches(token).count())
+                .sum::<usize>();
+            let category = fence::decision_category_label(decision.category).to_string();
+            let status = fence::decision_status_label(&decision).to_string();
+            (score > 0).then(|| AskDecisionResult {
+                id: decision.id,
+                score,
+                title: decision.title,
+                message: decision.message,
+                category,
+                status,
+                author: decision.author,
+                owner: decision.owner,
+                reviewer: decision.reviewer,
+                review_due: decision.review_due,
+                tags: decision.optional_tags,
+                rationale: decision.rationale,
+                consequences: decision.consequences,
+                links: decision.links,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    results.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.review_due.cmp(&left.review_due))
+    });
+    results.truncate(limit.max(1));
+    Ok(results)
+}
+
+fn decision_search_text(decision: &fence::Decision) -> String {
+    format!(
+        "{} {} {} {} {} {} {} {} {} {}",
+        decision.id,
+        decision.title.as_deref().unwrap_or_default(),
+        decision.message,
+        decision.rationale.as_deref().unwrap_or_default(),
+        decision.consequences.as_deref().unwrap_or_default(),
+        decision.author,
+        decision.owner.as_deref().unwrap_or_default(),
+        decision.reviewer.as_deref().unwrap_or_default(),
+        decision.optional_tags.join(" "),
+        decision.links.join(" ")
+    )
+    .to_lowercase()
+}
+
+fn print_ask_results(query: &str, results: &[AskDecisionResult]) {
+    if results.is_empty() {
+        println!("No matching decisions for: {query}");
+        println!("Try `fence search <keyword>` or record intent with `fence log`.");
+        return;
+    }
+
+    println!("Architectural memory results for: {query}");
+    for result in results {
+        let title = result.title.as_deref().unwrap_or(&result.message);
+        println!();
+        println!(
+            "{}  [{}] {}  score {}",
+            result.id, result.category, result.status, result.score
+        );
+        println!("{title}");
+        println!("Author: {}", result.author);
+        if let Some(owner) = &result.owner {
+            println!("Owner: {owner}");
+        }
+        if let Some(rationale) = &result.rationale {
+            println!("Rationale: {rationale}");
+        }
+    }
+}
+
 fn parse_category(value: Option<String>) -> fence::DecisionCategory {
     let normalized = value.unwrap_or_else(|| "gen".to_string()).to_lowercase();
 
@@ -789,11 +961,11 @@ fn default_scoring_for_stack(stack: Option<&str>) -> HashMap<String, u32> {
     scoring
 }
 
-fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
+fn maybe_write_ci_template(platform: &str, overwrite_existing: bool) -> Result<(), Box<dyn Error>> {
     match platform {
         "GitHub" => {
             let path = Path::new(".github").join("workflows").join("fence.yml");
-            if path.exists() {
+            if path.exists() && !overwrite_existing {
                 let overwrite = Confirm::new()
                     .with_prompt("fence.yml already exists. Overwrite?")
                     .default(false)
@@ -806,7 +978,7 @@ fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
         }
         "GitLab" => {
             let path = Path::new(".gitlab-ci.yml");
-            if path.exists() {
+            if path.exists() && !overwrite_existing {
                 let overwrite = Confirm::new()
                     .with_prompt(".gitlab-ci.yml already exists. Overwrite?")
                     .default(false)
@@ -822,13 +994,26 @@ fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_sentinel_init() -> Result<(), Box<dyn Error>> {
+#[derive(Debug, Clone, Copy)]
+struct SentinelInitOptions {
+    yes: bool,
+    github: bool,
+    gitlab: bool,
+}
+
+fn run_sentinel_init(options: SentinelInitOptions) -> Result<(), Box<dyn Error>> {
     if !has_git_directory() {
         println!("The Sentinel requires a Git repository. Please run git init first.");
         process::exit(1);
     }
 
-    let detected_platform = git_remote_platform().unwrap_or_else(|| "GitHub".to_string());
+    let detected_platform = if options.github {
+        "GitHub".to_string()
+    } else if options.gitlab {
+        "GitLab".to_string()
+    } else {
+        git_remote_platform().unwrap_or_else(|| "GitHub".to_string())
+    };
     let platform = if detected_platform == "GitLab" {
         "GitLab".to_string()
     } else {
@@ -851,7 +1036,7 @@ fn run_sentinel_init() -> Result<(), Box<dyn Error>> {
     config.sentinel_platform = Some(platform.clone());
 
     ensure_decisions_dir()?;
-    maybe_write_ci_template(&platform)?;
+    maybe_write_ci_template(&platform, options.yes)?;
     fence::write_config(&config_path(), &config)?;
 
     println!("Sentinel enabled for {platform}.");
@@ -859,6 +1044,90 @@ fn run_sentinel_init() -> Result<(), Box<dyn Error>> {
     println!("Run `fence sentinel check` to test it locally.");
 
     Ok(())
+}
+
+fn run_demo(path: &Path, force: bool) -> Result<(), Box<dyn Error>> {
+    if path.exists() {
+        if !force {
+            println!(
+                "{} already exists. Re-run with `--force` to replace it.",
+                path.display()
+            );
+            process::exit(1);
+        }
+        fs::remove_dir_all(path)?;
+    }
+
+    fs::create_dir_all(path.join("src"))?;
+    fs::create_dir_all(path.join(".fence/decisions"))?;
+    fs::write(path.join(".gitignore"), "target/\n")?;
+    fs::write(
+        path.join("README.md"),
+        "# Fence Demo\n\nThis repo is intentionally prepared to show Sentinel blocking an architectural change without a decision.\n\nRun:\n\n```sh\nfence sentinel check --base HEAD~1\nfence log \"Adopt Tokio runtime for async background jobs\" --title \"Tokio runtime\" --rationale \"Background workers need a maintained async runtime\" --consequences \"Runtime upgrades become part of platform maintenance\" --review-due 2026-12-31 --owner @platform --reviewer @security\n```\n",
+    )?;
+    fs::write(
+        path.join("Cargo.toml"),
+        "[package]\nname = \"fence-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n",
+    )?;
+    fs::write(
+        path.join("src/lib.rs"),
+        "pub fn runtime_name() -> &'static str {\n    \"std\"\n}\n",
+    )?;
+    fs::write(
+        path.join("fence.toml"),
+        "project_name = \"fence-demo\"\nmode = \"Team\"\nlog_path = \".fence/decisions\"\nauto_export = true\nmonitored_paths = [\"Cargo.toml\", \"src\"]\nignored_paths = [\"target/**\", \".git/**\"]\nstandalone_mode = false\nsafe_sync = true\nsentinel_enabled = true\nsentinel_platform = \"GitHub\"\nenforcement_level = \"Blocking\"\nthreshold = 10\n\n[scoring]\n\"Cargo.toml\" = 10\n\"src/**/*.rs\" = 2\n",
+    )?;
+    fs::write(
+        path.join("DECISIONS.md"),
+        "# Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n",
+    )?;
+
+    run_demo_git(path, &["init"])?;
+    run_demo_git(path, &["config", "user.name", "Fence Demo"])?;
+    run_demo_git(path, &["config", "user.email", "demo@fence.local"])?;
+    run_demo_git(path, &["add", "."])?;
+    run_demo_git(path, &["commit", "-m", "Initial demo service"])?;
+
+    fs::write(
+        path.join("Cargo.toml"),
+        "[package]\nname = \"fence-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ntokio = { version = \"1\", features = [\"rt-multi-thread\"] }\n",
+    )?;
+    fs::write(
+        path.join("src/lib.rs"),
+        "pub fn runtime_name() -> &'static str {\n    \"tokio\"\n}\n\npub fn worker_threads() -> usize {\n    4\n}\n",
+    )?;
+    run_demo_git(path, &["add", "Cargo.toml", "src/lib.rs"])?;
+    run_demo_git(path, &["commit", "-m", "Change runtime dependency"])?;
+
+    println!("Fence demo repo created at {}", path.display());
+    println!();
+    println!("Try the viral flow:");
+    println!("  cd {}", path.display());
+    println!("  fence sentinel check --base HEAD~1");
+    println!("  fence sentinel check --base HEAD~1 --markdown");
+    println!(
+        "  fence log \"Adopt Tokio runtime for async background jobs\" --title \"Tokio runtime\" --rationale \"Background workers need a maintained async runtime\" --consequences \"Runtime upgrades become part of platform maintenance\" --review-due 2026-12-31 --owner @platform --reviewer @security"
+    );
+    println!("  git add .fence/decisions DECISIONS.md");
+    println!("  git commit -m \"Record runtime decision\"");
+    println!("  fence sentinel check --base HEAD~2");
+    println!("  fence serve --open");
+
+    Ok(())
+}
+
+fn run_demo_git(path: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
+    let output = ProcessCommand::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!("git {} failed: {stderr}", args.join(" ")).into())
 }
 
 fn run_doctor() -> Result<(), Box<dyn Error>> {
@@ -1083,6 +1352,54 @@ fn print_sentinel_report(result: &fence::SentinelCheckResult) {
     } else {
         println!("Missing: .fence/decisions change");
     }
+}
+
+fn sentinel_markdown_report(result: &fence::SentinelCheckResult) -> String {
+    if result.bypassed {
+        return "### Fence Sentinel\n\nStatus: bypassed for latest commit.".to_string();
+    }
+
+    let relevant = result
+        .files
+        .iter()
+        .filter(|file| !file.ignored && (file.monitored || file.points > 0))
+        .collect::<Vec<_>>();
+
+    if relevant.is_empty() {
+        return "### Fence Sentinel\n\nStatus: no monitored changes detected.".to_string();
+    }
+
+    let mut report = String::from("### Fence Sentinel\n\n");
+    report.push_str("| File | Changes | Score |\n");
+    report.push_str("| :--- | ---: | ---: |\n");
+    for file in relevant {
+        let changes = if file.deletions > 0 {
+            format!("+{}, -{}", file.additions, file.deletions)
+        } else {
+            format!("+{}", file.additions)
+        };
+        report.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            file.path, changes, file.points
+        ));
+    }
+
+    report.push_str(&format!(
+        "\nRequired score: `>{}`  \nCurrent score: `{}`\n\n",
+        result.threshold, result.score
+    ));
+
+    if !result.requires_decision {
+        report.push_str("Decision: not required.");
+    } else if result.decision_found {
+        report.push_str("Decision: found.");
+    } else {
+        report.push_str(
+            "Missing: `.fence/decisions` change.\n\nRun `fence log \"why this change is intentional\"` and commit the generated decision file.",
+        );
+    }
+
+    report
 }
 
 fn print_config_validation(report: &fence::ConfigValidationReport) {
