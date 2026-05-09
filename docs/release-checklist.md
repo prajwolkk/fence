@@ -13,6 +13,7 @@ cargo run -- check
 cargo run -- --version
 cargo run -- ask fence
 cargo run -- demo --path /tmp/fence-demo --force
+scripts/launch-smoke.sh
 ```
 
 Verify:
@@ -25,6 +26,8 @@ Verify:
 - `fence sentinel check --json` returns automation-friendly JSON.
 - `fence sentinel check --markdown` renders GitHub-summary-ready Markdown.
 - `fence demo` creates a complete failing-then-fixed demo repo.
+- `scripts/launch-smoke.sh` passes from a clean checkout.
+- Team web sharing docs explain static hosting and private local serving.
 
 ## Publish
 
@@ -34,6 +37,8 @@ git push origin v0.1.0
 ```
 
 The release workflow publishes binaries when the `v0.1.0` tag is pushed.
+
+`v0.1.0` publishes Linux, macOS Intel, macOS Apple Silicon, and Windows x86_64 artifacts with SHA-256 checksums.
 
 ## After Release
 

@@ -38,6 +38,19 @@ cargo build --release
 
 For release builds, download the latest binary from GitHub Releases and put it somewhere on your `PATH`.
 
+Local development install:
+
+```sh
+cargo install --path .
+fence --version
+```
+
+After crates.io publishing, this will become:
+
+```sh
+cargo install fence
+```
+
 ## Screenshots
 
 ### Web UI
@@ -136,6 +149,8 @@ fence open
 ```
 
 Starts the same searchable UI on localhost. Defaults to `http://127.0.0.1:7878`. `fence open` starts the server and opens the browser.
+
+Teams can publish `fence-site/` to GitHub Pages, Netlify, Vercel, S3, or an internal static host. For private internal viewing, run `fence serve --host 0.0.0.0 --port 7878` behind a VPN or trusted network only. Fence v1 is local/static, not a hosted multi-user SaaS.
 
 ```sh
 fence completions zsh
@@ -248,7 +263,10 @@ fence 0.1.0
 - [Demo scenario](docs/demo.md)
 - [Sentinel](docs/sentinel.md)
 - [Web UI](docs/web-ui.md)
+- [Team web sharing](docs/team-web-sharing.md)
 - [Release checklist](docs/release-checklist.md)
+- [Schema and migrations](docs/schema-and-migrations.md)
+- [Roadmap](docs/roadmap.md)
 - [V1 launch checklist](docs/v1-launch-checklist.md)
 
 ## Repository Layout
@@ -269,6 +287,7 @@ fence.toml             Fence config for this repo
 ## Current Limitations
 
 - Existing ADR markdown imports are not implemented yet.
+- Hosted dashboards, GitHub Apps, SSO/RBAC, billing, and audit logs are roadmap items, not v1 promises.
 - Notification failures are best-effort and do not fail the command.
 
 ## Contributing

@@ -31,3 +31,15 @@ fence site
 ```
 
 This writes `fence-site/index.html`, which can be uploaded as a static artifact or opened directly in a browser.
+
+For team sharing, publish `fence-site/` to GitHub Pages, Netlify, Vercel, S3, or an internal docs server. See [Team Web Sharing](team-web-sharing.md).
+
+## Private Local Sharing
+
+On a trusted internal network or VPN:
+
+```sh
+fence serve --host 0.0.0.0 --port 7878
+```
+
+Do not expose `fence serve` directly to the public internet in v1. It is a lightweight local reader, not an authenticated multi-user web app.

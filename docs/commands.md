@@ -17,6 +17,7 @@ fence log "Use Postgres for audit-safe persistence" -c architecture -t database,
 fence log "Use signed audit events" --title "Signed audit events" --review-due 2026-12-31 --link https://github.com/acme/app/pull/42 --owner @platform --reviewer @security
 fence amend
 fence edit <id>
+fence edit <id> --title "Updated title" --review-due 2027-01-01 --owner @team
 fence review <id> --review-due 2026-12-31
 fence deprecate <id>
 fence log "Replace the legacy queue with durable jobs" --replaces <id>

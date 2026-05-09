@@ -12,6 +12,7 @@ Fence records architectural decisions, serves local architectural memory, and bl
 - `fence ask <query>`: local architectural-memory search that cites decision IDs.
 - `fence sentinel check --markdown`: PR-summary-ready Sentinel output.
 - `fence sentinel init --github --yes`: non-interactive GitHub Action setup.
+- `scripts/launch-smoke.sh`: repeatable end-to-end launch certification.
 - Release binaries for Linux and macOS.
 - README above-the-fold demo with screenshots.
 - Docs for solo flow, team flow, Sentinel flow, and release verification.
@@ -51,10 +52,11 @@ Fence records architectural decisions, serves local architectural memory, and bl
 - Web UI works without internet.
 - Markdown export stays in sync.
 - Release binary prints `fence 0.1.0`.
+- Team web sharing is documented for static hosting and private local serving.
 
 ## Can Be Built Without Product Input
 
-- CLI hardening and tests.
+- CLI hardening and launch smoke tests.
 - Demo repo generation.
 - Local search and `fence ask` preview.
 - Markdown Sentinel output.
