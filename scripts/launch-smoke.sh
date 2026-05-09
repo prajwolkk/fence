@@ -150,6 +150,7 @@ mkdir -p "${NO_GIT}"
 (
   cd "${NO_GIT}"
   "${FENCE}" init --yes
+  "${FENCE}" doctor
   "${FENCE}" log "Use SQLite for local cache" \
     --title "Local cache" \
     --rationale "Solo mode should work without network services" \

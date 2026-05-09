@@ -1673,6 +1673,7 @@ fn run_demo_git(path: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
 fn run_doctor() -> Result<(), Box<dyn Error>> {
     let mut issues = 0usize;
     let config_exists = config_path().exists();
+    let config = fence::load_runtime_config();
     print_check(
         "Config",
         config_exists,
@@ -1684,8 +1685,18 @@ fn run_doctor() -> Result<(), Box<dyn Error>> {
     }
 
     let git_present = has_git_directory();
-    print_check("Git", git_present, ".git directory found", "run `git init`");
-    if !git_present {
+    let git_ok = git_present || config.standalone_mode;
+    print_check(
+        "Git",
+        git_ok,
+        if git_present {
+            ".git directory found"
+        } else {
+            "standalone mode enabled"
+        },
+        "run `git init` or re-run `fence init --yes`",
+    );
+    if !git_ok {
         issues += 1;
     }
 
