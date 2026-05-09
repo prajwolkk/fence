@@ -43,7 +43,17 @@ Missing: .fence/decisions change
 
 ## GitHub Actions
 
-Use the release binary in CI:
+Recommended reusable action:
+
+```yaml
+- uses: prajwolkk/fence@v0.1.0
+  with:
+    comment: "true"
+```
+
+See [Sentinel PR guide](sentinel-pr-guide.md) and [examples/fence-action.github-actions.yml](examples/fence-action.github-actions.yml).
+
+Manual release-binary install:
 
 ```yaml
 - name: Install Fence

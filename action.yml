@@ -1,0 +1,108 @@
+name: Fence Sentinel
+description: Run Fence Sentinel and optionally update a pull request comment.
+
+inputs:
+  version:
+    description: Fence release version to install, or "latest".
+    required: false
+    default: latest
+  base:
+    description: Git base ref for Sentinel. Defaults to the pull request base branch or origin/main.
+    required: false
+    default: ""
+  comment:
+    description: Update a pull request comment with the Sentinel report.
+    required: false
+    default: "true"
+  github-token:
+    description: GitHub token used to update the PR comment.
+    required: false
+    default: ""
+
+outputs:
+  exit-code:
+    description: Fence Sentinel exit code.
+    value: ${{ steps.sentinel.outputs.exit-code }}
+  report-path:
+    description: Path to the generated Markdown report.
+    value: ${{ steps.sentinel.outputs.report-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Fence
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="${{ inputs.version }}"
+        if [[ "$version" == "latest" ]]; then
+          url="https://github.com/prajwolkk/fence/releases/latest/download/fence-x86_64-unknown-linux-gnu.tar.gz"
+        else
+          url="https://github.com/prajwolkk/fence/releases/download/${version}/fence-x86_64-unknown-linux-gnu.tar.gz"
+        fi
+        curl -fsSL "$url" | tar -xz
+        chmod +x fence
+        sudo mv fence /usr/local/bin/fence
+        fence --version
+
+    - name: Run Fence Sentinel
+      id: sentinel
+      shell: bash
+      run: |
+        set +e
+        base="${{ inputs.base }}"
+        if [[ -z "$base" ]]; then
+          if [[ -n "${{ github.base_ref }}" ]]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="origin/main"
+          fi
+        fi
+        fence sentinel check --base "$base" --markdown | tee fence-sentinel.md
+        status=${PIPESTATUS[0]}
+        cat fence-sentinel.md >> "$GITHUB_STEP_SUMMARY"
+        echo "exit-code=$status" >> "$GITHUB_OUTPUT"
+        echo "report-path=fence-sentinel.md" >> "$GITHUB_OUTPUT"
+        exit 0
+
+    - name: Update pull request comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token || github.token }}
+        script: |
+          const fs = require('fs');
+          const marker = '<!-- fence-sentinel-report -->';
+          const report = fs.readFileSync('fence-sentinel.md', 'utf8');
+          const body = `${marker}\n${report}`;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const comments = await github.paginate(github.rest.issues.listComments, {
+            owner,
+            repo,
+            issue_number,
+            per_page: 100,
+          });
+          const existing = comments.find((comment) =>
+            comment.user.type === 'Bot' && comment.body.includes(marker)
+          );
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body,
+            });
+          }
+
+    - name: Fail if Sentinel failed
+      if: ${{ steps.sentinel.outputs.exit-code != '0' }}
+      shell: bash
+      run: exit 1

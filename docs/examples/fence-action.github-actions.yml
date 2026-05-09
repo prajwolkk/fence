@@ -1,0 +1,19 @@
+name: Fence Sentinel
+
+on:
+  pull_request:
+
+jobs:
+  fence:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: prajwolkk/fence@v0.1.0
+        with:
+          comment: "true"
