@@ -164,7 +164,7 @@ mkdir -p "${NO_GIT}"
   require_contains "$("${FENCE}" show "${id}")" "Local cache"
   json_assert "$("${FENCE}" show "${id}" --json)" "data['id'] == '${id}'"
   json_assert "$("${FENCE}" stats --json)" "data['total'] == 1 and data['healthy'] == 1"
-  require_contains "$("${FENCE}" ask cache)" "${id}"
+  require_contains "$("${FENCE}" ask "why cache?")" "${id}"
   require_contains "$("${FENCE}" search cache)" "${id}"
   "${FENCE}" check
   "${FENCE}" site

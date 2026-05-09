@@ -1069,8 +1069,8 @@ struct AskDecisionResult {
 
 fn ask_decisions(query: &str, limit: usize) -> Result<Vec<AskDecisionResult>, Box<dyn Error>> {
     let tokens = query
-        .split_whitespace()
-        .map(|token| token.trim().to_lowercase())
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '@' && ch != '_' && ch != '-')
+        .map(|token| token.to_lowercase())
         .filter(|token| token.len() > 1)
         .collect::<Vec<_>>();
 
