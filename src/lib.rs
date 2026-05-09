@@ -18,7 +18,7 @@ const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
 const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"Fence: Commit blocked. Log or documentation is out of sync.\"\n  echo \"Run 'fence export' and stage the updated files.\"\n  exit 1\nfi\n";
 const SITE_TEMPLATE: &str = include_str!("site_template.html");
-const GITHUB_WORKFLOW_TEMPLATE: &str = "name: Fence Sentinel\n\non:\n  pull_request:\n  push:\n    branches: [main, master]\n\njobs:\n  fence:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n      - name: Install Fence\n        run: |\n          curl -fsSL https://github.com/prajwolkk/fence/releases/latest/download/fence-x86_64-unknown-linux-gnu.tar.gz | tar -xz\n          sudo mv fence /usr/local/bin/fence\n          fence --version\n      - name: Fence Sentinel Check\n        shell: bash\n        run: |\n          BASE=\"origin/${{ github.base_ref || 'main' }}\"\n          set +e\n          fence sentinel check --base \"$BASE\" --markdown | tee fence-sentinel.md\n          status=${PIPESTATUS[0]}\n          cat fence-sentinel.md >> \"$GITHUB_STEP_SUMMARY\"\n          exit \"$status\"\n";
+const GITHUB_WORKFLOW_TEMPLATE: &str = "name: Fence Sentinel\n\non:\n  pull_request:\n  push:\n    branches: [main, master]\n\njobs:\n  fence:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      pull-requests: write\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n      - uses: prajwolkk/fence@v0.1.0\n        with:\n          comment: \"${{ github.event_name == 'pull_request' }}\"\n";
 const GITLAB_CI_TEMPLATE: &str = "stages:\n  - fence\n\nfence_sentinel:\n  stage: fence\n  image: rust:latest\n  script:\n    - cargo run -- sentinel check --base origin/main || cargo run -- sentinel check --base origin/master\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +89,10 @@ pub struct FenceConfig {
     pub notifications: Option<NotificationsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_settings: Option<TeamSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reviewer: Option<String>,
 }
 
 fn default_log_path() -> String {
@@ -181,6 +185,7 @@ pub enum DecisionCategory {
 pub enum DecisionStatus {
     Proposed,
     Accepted,
+    Approved,
     Deprecated,
     Superseded,
 }
@@ -218,6 +223,10 @@ pub struct Decision {
     pub owner: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +284,8 @@ impl FenceConfig {
             threshold: default_threshold(),
             notifications,
             team_settings,
+            default_owner: None,
+            default_reviewer: None,
         }
     }
 }
@@ -353,11 +364,14 @@ impl FenceManager {
             ));
         }
 
+        let config = load_runtime_config();
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let author = Self::get_author();
         let branch = get_branch_name();
         let id = short_hash(&format!("{timestamp}{author}{branch}{message}"));
         let review_due = normalize_review_due(options.review_due.as_deref())?;
+        let owner = options.owner.or_else(|| config.default_owner.clone());
+        let reviewer = options.reviewer.or_else(|| config.default_reviewer.clone());
         let entry = Decision {
             id,
             author,
@@ -374,15 +388,16 @@ impl FenceManager {
             rationale: options.rationale,
             consequences: options.consequences,
             links: options.links,
-            owner: options.owner,
-            reviewer: options.reviewer,
+            owner,
+            reviewer,
+            approved_by: None,
+            approved_at: None,
         };
         write_decision_file(&entry)?;
         if let Some(old_id) = options.replaces {
             let _ = supersede_decision(&old_id, &entry.id)?;
         }
 
-        let config = load_runtime_config();
         if config.auto_export {
             export_markdown()?;
         }
@@ -453,6 +468,8 @@ pub fn load_runtime_config() -> FenceConfig {
         threshold: default_threshold(),
         notifications: None,
         team_settings: None,
+        default_owner: None,
+        default_reviewer: None,
     })
 }
 
@@ -577,9 +594,11 @@ pub fn decision_detail(decision: &Decision) -> String {
     };
     let owner = decision.owner.as_deref().unwrap_or("-");
     let reviewer = decision.reviewer.as_deref().unwrap_or("-");
+    let approved_by = decision.approved_by.as_deref().unwrap_or("-");
+    let approved_at = decision.approved_at.as_deref().unwrap_or("-");
 
     format!(
-        "ID: {}\nTitle: {}\nStatus: {}\nCategory: {}\nAuthor: {}\nOwner: {}\nReviewer: {}\nBranch: {}\nTimestamp: {}\nReview Due: {}\nTags: {}\nLinks: {}\nSupersedes: {}\nSuperseded By: {}\n\n{}\n\nRationale: {}\nConsequences: {}",
+        "ID: {}\nTitle: {}\nStatus: {}\nCategory: {}\nAuthor: {}\nOwner: {}\nReviewer: {}\nApproved By: {}\nApproved At: {}\nBranch: {}\nTimestamp: {}\nReview Due: {}\nTags: {}\nLinks: {}\nSupersedes: {}\nSuperseded By: {}\n\n{}\n\nRationale: {}\nConsequences: {}",
         decision.id,
         title,
         decision_status_label(decision),
@@ -587,6 +606,8 @@ pub fn decision_detail(decision: &Decision) -> String {
         decision.author,
         owner,
         reviewer,
+        approved_by,
+        approved_at,
         if decision.branch.is_empty() {
             "-"
         } else {
@@ -671,6 +692,8 @@ pub fn parse_log_line(line: &str) -> Option<Decision> {
         links: Vec::new(),
         owner: None,
         reviewer: None,
+        approved_by: None,
+        approved_at: None,
     })
 }
 
@@ -718,18 +741,29 @@ pub fn read_log_entries() -> Result<Vec<Decision>, io::Error> {
 
 pub fn render_site_html() -> Result<String, io::Error> {
     let entries = read_log_entries()?;
-    render_site_html_for_entries(&entries)
+    render_site_html_for_entries_with_mode(&entries, true)
 }
 
 pub fn render_site_html_for_entries(entries: &[Decision]) -> Result<String, io::Error> {
+    render_site_html_for_entries_with_mode(entries, true)
+}
+
+pub fn render_site_html_for_entries_with_mode(
+    entries: &[Decision],
+    writable: bool,
+) -> Result<String, io::Error> {
     let data = serde_json::to_string(entries)
         .map_err(io::Error::other)?
         .replace("</", "<\\/");
-    Ok(SITE_TEMPLATE.replace("__FENCE_DATA__", &data))
+    Ok(SITE_TEMPLATE.replace("__FENCE_DATA__", &data).replace(
+        "__FENCE_WRITABLE__",
+        if writable { "true" } else { "false" },
+    ))
 }
 
 pub fn generate_site() -> Result<PathBuf, io::Error> {
-    let html = render_site_html()?;
+    let entries = read_log_entries()?;
+    let html = render_site_html_for_entries_with_mode(&entries, false)?;
 
     let output_dir = Path::new("fence-site");
     fs::create_dir_all(output_dir)?;
@@ -839,6 +873,24 @@ pub fn review_decision(id: &str, review_due: Option<&str>) -> Result<Option<Deci
     })
 }
 
+pub fn approve_decision(id: &str) -> Result<Option<Decision>, io::Error> {
+    update_decision(id, |decision| {
+        if matches!(
+            decision.status,
+            DecisionStatus::Deprecated | DecisionStatus::Superseded
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "deprecated or superseded decisions cannot be approved",
+            ));
+        }
+        decision.status = DecisionStatus::Approved;
+        decision.approved_by = Some(FenceManager::get_author());
+        decision.approved_at = Some(Local::now().to_rfc3339());
+        Ok(())
+    })
+}
+
 pub fn stale_decisions() -> Result<Vec<Decision>, io::Error> {
     Ok(read_decision_entries()?
         .into_iter()
@@ -867,7 +919,10 @@ pub fn supersede_decision(old_id: &str, new_id: &str) -> Result<bool, io::Error>
 }
 
 pub fn is_stale(decision: &Decision) -> bool {
-    if decision.status != DecisionStatus::Accepted {
+    if !matches!(
+        decision.status,
+        DecisionStatus::Accepted | DecisionStatus::Approved
+    ) {
         return false;
     }
 
@@ -881,7 +936,8 @@ pub fn decision_status_label(decision: &Decision) -> &'static str {
         DecisionStatus::Proposed => "Proposed",
         DecisionStatus::Deprecated => "Deprecated",
         DecisionStatus::Superseded => "Superseded",
-        DecisionStatus::Accepted if is_stale(decision) => "Stale",
+        DecisionStatus::Accepted | DecisionStatus::Approved if is_stale(decision) => "Stale",
+        DecisionStatus::Approved => "Approved",
         DecisionStatus::Accepted => "Accepted",
     }
 }
@@ -899,6 +955,7 @@ pub struct DecisionStatusCounts {
     pub healthy: usize,
     pub needs_attention: usize,
     pub accepted: usize,
+    pub approved: usize,
     pub proposed: usize,
     pub stale: usize,
     pub deprecated: usize,
@@ -912,6 +969,7 @@ pub fn decision_status_counts() -> Result<DecisionStatusCounts, io::Error> {
         healthy: 0,
         needs_attention: 0,
         accepted: 0,
+        approved: 0,
         proposed: 0,
         stale: 0,
         deprecated: 0,
@@ -920,12 +978,16 @@ pub fn decision_status_counts() -> Result<DecisionStatusCounts, io::Error> {
 
     for decision in entries {
         match decision.status {
-            DecisionStatus::Accepted if is_stale(&decision) => {
+            DecisionStatus::Accepted | DecisionStatus::Approved if is_stale(&decision) => {
                 counts.stale += 1;
                 counts.needs_attention += 1;
             }
             DecisionStatus::Accepted => {
                 counts.accepted += 1;
+                counts.healthy += 1;
+            }
+            DecisionStatus::Approved => {
+                counts.approved += 1;
                 counts.healthy += 1;
             }
             DecisionStatus::Proposed => {
@@ -952,7 +1014,9 @@ pub fn health_stats() -> Result<DecisionHealthStats, io::Error> {
 
     for decision in entries {
         match decision.status {
-            DecisionStatus::Accepted if !is_stale(&decision) => healthy += 1,
+            DecisionStatus::Accepted | DecisionStatus::Approved if !is_stale(&decision) => {
+                healthy += 1;
+            }
             DecisionStatus::Superseded => {}
             _ => unhealthy += 1,
         }
@@ -1150,6 +1214,8 @@ fn legacy_plaintext_decision(line: &str, index: usize) -> Option<Decision> {
         links: Vec::new(),
         owner: None,
         reviewer: None,
+        approved_by: None,
+        approved_at: None,
     })
 }
 
@@ -1992,6 +2058,8 @@ mod tests {
             links: Vec::new(),
             owner: None,
             reviewer: None,
+            approved_by: None,
+            approved_at: None,
         };
 
         append_markdown_row(&path, &entry).expect("should append markdown row");
@@ -2037,6 +2105,8 @@ mod tests {
             links: Vec::new(),
             owner: None,
             reviewer: None,
+            approved_by: None,
+            approved_at: None,
         };
         let line = serde_json::to_string(&entry).expect("should serialize");
         let parsed = parse_log_line(&line).expect("should parse json");
@@ -2114,6 +2184,8 @@ mod tests {
                 links: Vec::new(),
                 owner: None,
                 reviewer: None,
+                approved_by: None,
+                approved_at: None,
             };
             let second = Decision {
                 id: "def67890".to_string(),
@@ -2134,6 +2206,8 @@ mod tests {
                 links: Vec::new(),
                 owner: None,
                 reviewer: None,
+                approved_by: None,
+                approved_at: None,
             };
             write_decision_at_path(
                 &decisions_dir().join("20260414120000_abc12345.json"),
@@ -2202,6 +2276,8 @@ mod tests {
                 links: Vec::new(),
                 owner: None,
                 reviewer: None,
+                approved_by: None,
+                approved_at: None,
             },
         )
         .expect("should write decision");
@@ -2226,6 +2302,8 @@ mod tests {
                 links: Vec::new(),
                 owner: None,
                 reviewer: None,
+                approved_by: None,
+                approved_at: None,
             },
         )
         .expect("should write decision");
@@ -2275,6 +2353,8 @@ mod tests {
                 links: Vec::new(),
                 owner: None,
                 reviewer: None,
+                approved_by: None,
+                approved_at: None,
             };
             write_decision_at_path(&path, &entry).expect("should write decision");
 
@@ -2322,6 +2402,8 @@ mod tests {
                 links: Vec::new(),
                 owner: None,
                 reviewer: None,
+                approved_by: None,
+                approved_at: None,
             };
             let replacement = Decision {
                 id: "new12345".to_string(),
@@ -2342,6 +2424,8 @@ mod tests {
                 links: Vec::new(),
                 owner: None,
                 reviewer: None,
+                approved_by: None,
+                approved_at: None,
             };
             write_decision_at_path(&old_path, &old).expect("should write old decision");
             write_decision_at_path(&new_path, &replacement).expect("should write replacement");

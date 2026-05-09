@@ -303,7 +303,12 @@ fn status_indicator(entry: &fence::Decision) -> &'static str {
     match entry.status {
         fence::DecisionStatus::Deprecated => "[x]",
         fence::DecisionStatus::Superseded => "[s]",
-        fence::DecisionStatus::Accepted if fence::is_stale(entry) => "[!]",
+        fence::DecisionStatus::Accepted | fence::DecisionStatus::Approved
+            if fence::is_stale(entry) =>
+        {
+            "[!]"
+        }
+        fence::DecisionStatus::Approved => "[a]",
         _ => "[*]",
     }
 }
@@ -314,9 +319,12 @@ fn status_style(entry: &fence::Decision) -> Style {
         fence::DecisionStatus::Superseded => Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM),
-        fence::DecisionStatus::Accepted if fence::is_stale(entry) => {
+        fence::DecisionStatus::Accepted | fence::DecisionStatus::Approved
+            if fence::is_stale(entry) =>
+        {
             Style::default().fg(Color::Yellow)
         }
+        fence::DecisionStatus::Approved => Style::default().fg(Color::Blue),
         _ => Style::default().fg(Color::Green),
     }
 }

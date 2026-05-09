@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command as ProcessCommand};
@@ -15,7 +15,7 @@ use fence::{
     ensure_gitignore_contains, git_hooks_path, git_remote_platform, has_git_directory,
     install_pre_commit_hook, remove_ignore_entry, sanitize_project_name,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod tui;
 
@@ -62,7 +62,9 @@ enum Commands {
     },
     Amend,
     Edit {
-        id: String,
+        id: Option<String>,
+        #[arg(long)]
+        search: Option<String>,
         #[arg(long)]
         message: Option<String>,
         #[arg(short, long)]
@@ -90,7 +92,16 @@ enum Commands {
         review_due: Option<String>,
     },
     Deprecate {
-        id: String,
+        id: Option<String>,
+        #[arg(long)]
+        search: Option<String>,
+    },
+    Approve {
+        id: Option<String>,
+        #[arg(long)]
+        search: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     Show {
         id: String,
@@ -103,6 +114,11 @@ enum Commands {
     },
     Search {
         keyword: String,
+    },
+    Pick {
+        keyword: String,
+        #[arg(long)]
+        json: bool,
     },
     Ask {
         query: String,
@@ -153,6 +169,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    Owners {
+        #[arg(long)]
+        json: bool,
+    },
+    ReviewDue {
+        #[arg(long)]
+        json: bool,
+    },
+    Team {
+        #[command(subcommand)]
+        command: TeamCommands,
+    },
     Doctor,
     Sentinel {
         #[command(subcommand)]
@@ -168,6 +196,14 @@ enum Commands {
         force: bool,
     },
     Badge,
+}
+
+#[derive(Subcommand)]
+enum TeamCommands {
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -245,6 +281,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Edit {
             id,
+            search,
             message,
             category,
             tags,
@@ -258,6 +295,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } => {
             run_edit(EditOptions {
                 id,
+                search,
                 message,
                 category,
                 tags,
@@ -281,11 +319,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                 process::exit(1);
             }
         }
-        Commands::Deprecate { id } => {
+        Commands::Deprecate { id, search } => {
+            let id = resolve_decision_id(id, search)?;
             if fence::deprecate_decision(&id)? {
-                println!("Decision deprecated.");
+                println!("Decision {id} deprecated.");
             } else {
                 println!("Decision not found: {id}");
+                process::exit(1);
+            }
+        }
+        Commands::Approve { id, search, json } => {
+            let id = resolve_decision_id(id, search)?;
+            if let Some(decision) = fence::approve_decision(&id)? {
+                if json {
+                    print_json(&decision)?;
+                } else {
+                    let approver = decision.approved_by.as_deref().unwrap_or("unknown");
+                    println!("Decision {} approved by {}.", decision.id, approver);
+                }
+            } else {
+                println!("Decision not found or ID prefix is ambiguous: {id}");
                 process::exit(1);
             }
         }
@@ -314,6 +367,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("\n🔍 --- SEARCH RESULTS ---");
             for line in results {
                 println!("{line}");
+            }
+        }
+        Commands::Pick { keyword, json } => {
+            let results = matching_decisions(&keyword)?;
+            if json {
+                print_json(&results)?;
+            } else if results.is_empty() {
+                println!("No decisions matched: {keyword}");
+            } else {
+                println!("Matching decisions:");
+                print_decision_candidates(&results);
             }
         }
         Commands::Ask { query, limit, json } => {
@@ -404,6 +468,37 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
+        Commands::Owners { json } => {
+            let summary = owner_summaries()?;
+            if json {
+                print_json(&summary)?;
+            } else {
+                print_owner_summaries(&summary);
+            }
+        }
+        Commands::ReviewDue { json } => {
+            let due = review_due_entries()?;
+            if json {
+                print_json(&due)?;
+            } else if due.is_empty() {
+                println!("No overdue reviews.");
+            } else {
+                println!("Overdue reviews:");
+                for decision in due {
+                    println!("{}", fence::decision_summary_line(&decision));
+                }
+            }
+        }
+        Commands::Team { command } => match command {
+            TeamCommands::Status { json } => {
+                let status = team_status()?;
+                if json {
+                    print_json(&status)?;
+                } else {
+                    print_team_status(&status);
+                }
+            }
+        },
         Commands::Doctor => {
             run_doctor()?;
         }
@@ -793,7 +888,8 @@ fn run_amend() -> Result<(), Box<dyn Error>> {
 
 #[derive(Debug)]
 struct EditOptions {
-    id: String,
+    id: Option<String>,
+    search: Option<String>,
     message: Option<String>,
     category: Option<String>,
     tags: Option<String>,
@@ -822,15 +918,15 @@ impl EditOptions {
 }
 
 fn run_edit(options: EditOptions) -> Result<(), Box<dyn Error>> {
+    let id = resolve_decision_id(options.id.clone(), options.search.clone())?;
     if options.is_noninteractive() {
-        return run_edit_noninteractive(options);
+        return run_edit_noninteractive(id, options);
     }
 
-    run_edit_interactive(&options.id)
+    run_edit_interactive(&id)
 }
 
-fn run_edit_noninteractive(options: EditOptions) -> Result<(), Box<dyn Error>> {
-    let id = options.id.clone();
+fn run_edit_noninteractive(id: String, options: EditOptions) -> Result<(), Box<dyn Error>> {
     let edited = fence::update_decision(&id, |decision| {
         if let Some(title) = options.title {
             decision.title = optional_value(title);
@@ -1036,6 +1132,263 @@ fn decision_search_text(decision: &fence::Decision) -> String {
         decision.links.join(" ")
     )
     .to_lowercase()
+}
+
+fn matching_decisions(keyword: &str) -> Result<Vec<fence::Decision>, Box<dyn Error>> {
+    let term = keyword.trim().to_lowercase();
+    if term.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut matches = fence::read_log_entries()?
+        .into_iter()
+        .filter(|decision| decision_search_text(decision).contains(&term))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+    Ok(matches)
+}
+
+fn resolve_decision_id(
+    id: Option<String>,
+    search: Option<String>,
+) -> Result<String, Box<dyn Error>> {
+    match (id, search) {
+        (Some(_), Some(_)) => {
+            println!("Use either a decision ID or --search, not both.");
+            process::exit(1);
+        }
+        (Some(id), None) => Ok(id),
+        (None, Some(query)) => {
+            let matches = matching_decisions(&query)?;
+            match matches.as_slice() {
+                [] => {
+                    println!("No decisions matched: {query}");
+                    process::exit(1);
+                }
+                [decision] => Ok(decision.id.clone()),
+                _ => {
+                    println!("Search matched multiple decisions. Pick one ID:");
+                    print_decision_candidates(&matches);
+                    process::exit(1);
+                }
+            }
+        }
+        (None, None) => {
+            println!("Provide a decision ID or use --search <keyword>.");
+            process::exit(1);
+        }
+    }
+}
+
+fn print_decision_candidates(decisions: &[fence::Decision]) {
+    for decision in decisions {
+        println!("{}", fence::decision_summary_line(decision));
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct OwnerSummary {
+    owner: String,
+    total: usize,
+    needs_review: usize,
+    missing_reviewer: usize,
+    decisions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewerSummary {
+    reviewer: String,
+    total: usize,
+    needs_review: usize,
+    decisions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TeamStatusSummary {
+    total: usize,
+    healthy: usize,
+    needs_attention: usize,
+    unowned: usize,
+    missing_reviewer: usize,
+    overdue_reviews: usize,
+    owners: Vec<OwnerSummary>,
+    reviewers: Vec<ReviewerSummary>,
+}
+
+fn owner_summaries() -> Result<Vec<OwnerSummary>, Box<dyn Error>> {
+    let mut grouped: HashMap<String, Vec<fence::Decision>> = HashMap::new();
+    for decision in fence::read_log_entries()? {
+        let owner = decision
+            .owner
+            .clone()
+            .filter(|owner| !owner.trim().is_empty())
+            .unwrap_or_else(|| "(unowned)".to_string());
+        grouped.entry(owner).or_default().push(decision);
+    }
+
+    let mut summaries = grouped
+        .into_iter()
+        .map(|(owner, decisions)| {
+            let needs_review = decisions
+                .iter()
+                .filter(|decision| fence::is_stale(decision))
+                .count();
+            let missing_reviewer = decisions
+                .iter()
+                .filter(|decision| decision.reviewer.as_deref().unwrap_or("").trim().is_empty())
+                .count();
+            let decision_ids = decisions
+                .iter()
+                .map(|decision| decision.id.clone())
+                .collect::<Vec<_>>();
+            OwnerSummary {
+                owner,
+                total: decisions.len(),
+                needs_review,
+                missing_reviewer,
+                decisions: decision_ids,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    summaries.sort_by(|left, right| {
+        left.owner
+            .cmp(&right.owner)
+            .then_with(|| right.needs_review.cmp(&left.needs_review))
+    });
+    Ok(summaries)
+}
+
+fn reviewer_summaries() -> Result<Vec<ReviewerSummary>, Box<dyn Error>> {
+    let mut grouped: HashMap<String, Vec<fence::Decision>> = HashMap::new();
+    for decision in fence::read_log_entries()? {
+        let reviewer = decision
+            .reviewer
+            .clone()
+            .filter(|reviewer| !reviewer.trim().is_empty())
+            .unwrap_or_else(|| "(missing reviewer)".to_string());
+        grouped.entry(reviewer).or_default().push(decision);
+    }
+
+    let mut summaries = grouped
+        .into_iter()
+        .map(|(reviewer, decisions)| {
+            let needs_review = decisions
+                .iter()
+                .filter(|decision| fence::is_stale(decision))
+                .count();
+            let decision_ids = decisions
+                .iter()
+                .map(|decision| decision.id.clone())
+                .collect::<Vec<_>>();
+            ReviewerSummary {
+                reviewer,
+                total: decisions.len(),
+                needs_review,
+                decisions: decision_ids,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    summaries.sort_by(|left, right| {
+        left.reviewer
+            .cmp(&right.reviewer)
+            .then_with(|| right.needs_review.cmp(&left.needs_review))
+    });
+    Ok(summaries)
+}
+
+fn review_due_entries() -> Result<Vec<fence::Decision>, Box<dyn Error>> {
+    let mut due = fence::read_log_entries()?
+        .into_iter()
+        .filter(fence::is_stale)
+        .collect::<Vec<_>>();
+    due.sort_by(|left, right| {
+        left.owner
+            .as_deref()
+            .unwrap_or("")
+            .cmp(right.owner.as_deref().unwrap_or(""))
+            .then_with(|| left.review_due.cmp(&right.review_due))
+    });
+    Ok(due)
+}
+
+fn team_status() -> Result<TeamStatusSummary, Box<dyn Error>> {
+    let entries = fence::read_log_entries()?;
+    let counts = fence::decision_status_counts()?;
+    let unowned = entries
+        .iter()
+        .filter(|decision| decision.owner.as_deref().unwrap_or("").trim().is_empty())
+        .count();
+    let missing_reviewer = entries
+        .iter()
+        .filter(|decision| decision.reviewer.as_deref().unwrap_or("").trim().is_empty())
+        .count();
+    let overdue_reviews = entries
+        .iter()
+        .filter(|decision| fence::is_stale(decision))
+        .count();
+
+    Ok(TeamStatusSummary {
+        total: counts.total,
+        healthy: counts.healthy,
+        needs_attention: counts.needs_attention,
+        unowned,
+        missing_reviewer,
+        overdue_reviews,
+        owners: owner_summaries()?,
+        reviewers: reviewer_summaries()?,
+    })
+}
+
+fn print_owner_summaries(summaries: &[OwnerSummary]) {
+    if summaries.is_empty() {
+        println!("No decisions yet.");
+        return;
+    }
+
+    println!("Decision owners:");
+    for summary in summaries {
+        println!(
+            "{}  decisions={}  overdue={}  missing_reviewer={}  ids={}",
+            summary.owner,
+            summary.total,
+            summary.needs_review,
+            summary.missing_reviewer,
+            display_list(&summary.decisions)
+        );
+    }
+}
+
+fn print_team_status(status: &TeamStatusSummary) {
+    println!("Team decision status");
+    println!("Total decisions: {}", status.total);
+    println!("Healthy: {}", status.healthy);
+    println!("Needs attention: {}", status.needs_attention);
+    println!("Unowned: {}", status.unowned);
+    println!("Missing reviewer: {}", status.missing_reviewer);
+    println!("Overdue reviews: {}", status.overdue_reviews);
+    println!();
+    print_owner_summaries(&status.owners);
+    println!();
+    print_reviewer_summaries(&status.reviewers);
+}
+
+fn print_reviewer_summaries(summaries: &[ReviewerSummary]) {
+    if summaries.is_empty() {
+        return;
+    }
+
+    println!("Decision reviewers:");
+    for summary in summaries {
+        println!(
+            "{}  decisions={}  overdue={}  ids={}",
+            summary.reviewer,
+            summary.total,
+            summary.needs_review,
+            display_list(&summary.decisions)
+        );
+    }
 }
 
 fn print_ask_results(query: &str, results: &[AskDecisionResult]) {
@@ -1436,43 +1789,82 @@ fn open_url(url: &str) {
     let _ = ProcessCommand::new(command.0).args(command.1).spawn();
 }
 
+#[derive(Debug, Deserialize)]
+struct WebEditDecision {
+    title: Option<String>,
+    optional_tags: Option<Vec<String>>,
+    owner: Option<String>,
+    reviewer: Option<String>,
+    rationale: Option<String>,
+    consequences: Option<String>,
+    review_due: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebReviewDecision {
+    review_due: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebReplaceDecision {
+    message: String,
+    category: Option<String>,
+    title: Option<String>,
+    optional_tags: Option<Vec<String>>,
+    owner: Option<String>,
+    reviewer: Option<String>,
+    rationale: Option<String>,
+    consequences: Option<String>,
+    review_due: Option<String>,
+    links: Option<Vec<String>>,
+}
+
 fn handle_http_request(mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
+    let method = request_line
+        .split_whitespace()
+        .next()
+        .unwrap_or("GET")
+        .to_string();
     let path = request_line
         .split_whitespace()
         .nth(1)
         .unwrap_or("/")
         .split('?')
         .next()
-        .unwrap_or("/");
+        .unwrap_or("/")
+        .to_string();
 
-    let (status, content_type, body) = match path {
-        "/" | "/index.html" => (
-            "HTTP/1.1 200 OK",
-            "text/html; charset=utf-8",
-            fence::render_site_html()?,
-        ),
-        "/api/decisions" => (
-            "HTTP/1.1 200 OK",
-            "application/json; charset=utf-8",
-            serde_json::to_string(&fence::read_log_entries()?)?,
-        ),
-        "/api/stats" => (
-            "HTTP/1.1 200 OK",
-            "application/json; charset=utf-8",
-            serde_json::to_string(&fence::decision_status_counts()?)?,
-        ),
-        "/health" => (
-            "HTTP/1.1 200 OK",
-            "application/json; charset=utf-8",
-            "{\"status\":\"ok\"}".to_string(),
-        ),
-        _ => (
-            "HTTP/1.1 404 Not Found",
+    let mut content_length = 0usize;
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header)?;
+        let trimmed = header.trim_end();
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(value) = trimmed
+            .strip_prefix("Content-Length:")
+            .or_else(|| trimmed.strip_prefix("content-length:"))
+        {
+            content_length = value.trim().parse().unwrap_or(0);
+        }
+    }
+
+    let mut body_bytes = vec![0; content_length];
+    if content_length > 0 {
+        reader.read_exact(&mut body_bytes)?;
+    }
+    let request_body = String::from_utf8_lossy(&body_bytes).to_string();
+
+    let (status, content_type, body) = match route_http_request(&method, &path, &request_body) {
+        Ok(response) => response,
+        Err(err) => (
+            "HTTP/1.1 500 Internal Server Error",
             "text/plain; charset=utf-8",
-            "Not found".to_string(),
+            format!("Request failed: {err}"),
         ),
     };
 
@@ -1484,6 +1876,171 @@ fn handle_http_request(mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
     stream.flush()?;
 
     Ok(())
+}
+
+fn route_http_request(
+    method: &str,
+    path: &str,
+    request_body: &str,
+) -> Result<(&'static str, &'static str, String), Box<dyn Error>> {
+    if method == "GET" {
+        return Ok(match path {
+            "/" | "/index.html" => (
+                "HTTP/1.1 200 OK",
+                "text/html; charset=utf-8",
+                fence::render_site_html()?,
+            ),
+            "/api/decisions" => (
+                "HTTP/1.1 200 OK",
+                "application/json; charset=utf-8",
+                serde_json::to_string(&fence::read_log_entries()?)?,
+            ),
+            "/api/stats" => (
+                "HTTP/1.1 200 OK",
+                "application/json; charset=utf-8",
+                serde_json::to_string(&fence::decision_status_counts()?)?,
+            ),
+            "/health" => (
+                "HTTP/1.1 200 OK",
+                "application/json; charset=utf-8",
+                "{\"status\":\"ok\"}".to_string(),
+            ),
+            _ => (
+                "HTTP/1.1 404 Not Found",
+                "text/plain; charset=utf-8",
+                "Not found".to_string(),
+            ),
+        });
+    }
+
+    if method != "POST" {
+        return Ok((
+            "HTTP/1.1 405 Method Not Allowed",
+            "text/plain; charset=utf-8",
+            "Method not allowed".to_string(),
+        ));
+    }
+
+    let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    if segments.len() != 4 || segments[0] != "api" || segments[1] != "decisions" {
+        return Ok((
+            "HTTP/1.1 404 Not Found",
+            "text/plain; charset=utf-8",
+            "Not found".to_string(),
+        ));
+    }
+
+    let id = segments[2];
+    let action = segments[3];
+    match action {
+        "deprecate" => {
+            if fence::deprecate_decision(id)? {
+                Ok(json_http(
+                    "HTTP/1.1 200 OK",
+                    &serde_json::json!({ "ok": true }),
+                )?)
+            } else {
+                Ok((
+                    "HTTP/1.1 404 Not Found",
+                    "text/plain; charset=utf-8",
+                    "Decision not found".to_string(),
+                ))
+            }
+        }
+        "approve" => {
+            if let Some(decision) = fence::approve_decision(id)? {
+                Ok(json_http("HTTP/1.1 200 OK", &decision)?)
+            } else {
+                Ok((
+                    "HTTP/1.1 404 Not Found",
+                    "text/plain; charset=utf-8",
+                    "Decision not found".to_string(),
+                ))
+            }
+        }
+        "review" => {
+            let payload: WebReviewDecision = serde_json::from_str(request_body)?;
+            if let Some(decision) = fence::review_decision(id, payload.review_due.as_deref())? {
+                Ok(json_http("HTTP/1.1 200 OK", &decision)?)
+            } else {
+                Ok((
+                    "HTTP/1.1 404 Not Found",
+                    "text/plain; charset=utf-8",
+                    "Decision not found".to_string(),
+                ))
+            }
+        }
+        "edit" => {
+            let payload: WebEditDecision = serde_json::from_str(request_body)?;
+            if let Some(decision) = fence::update_decision(id, |decision| {
+                if let Some(title) = payload.title {
+                    decision.title = optional_value(title);
+                }
+                if let Some(tags) = payload.optional_tags {
+                    decision.optional_tags = tags;
+                }
+                if let Some(owner) = payload.owner {
+                    decision.owner = optional_value(owner);
+                }
+                if let Some(reviewer) = payload.reviewer {
+                    decision.reviewer = optional_value(reviewer);
+                }
+                if let Some(rationale) = payload.rationale {
+                    decision.rationale = optional_value(rationale);
+                }
+                if let Some(consequences) = payload.consequences {
+                    decision.consequences = optional_value(consequences);
+                }
+                if let Some(review_due) = payload.review_due {
+                    decision.review_due = fence::normalize_review_due(Some(&review_due))?;
+                }
+                Ok(())
+            })? {
+                Ok(json_http("HTTP/1.1 200 OK", &decision)?)
+            } else {
+                Ok((
+                    "HTTP/1.1 404 Not Found",
+                    "text/plain; charset=utf-8",
+                    "Decision not found".to_string(),
+                ))
+            }
+        }
+        "replace" => {
+            let payload: WebReplaceDecision = serde_json::from_str(request_body)?;
+            let decision = FenceManager::record_with_details(
+                &payload.message,
+                DecisionRecordOptions {
+                    category: parse_category(payload.category),
+                    optional_tags: payload.optional_tags.unwrap_or_default(),
+                    replaces: Some(id.to_string()),
+                    review_due: payload.review_due,
+                    title: payload.title,
+                    rationale: payload.rationale,
+                    consequences: payload.consequences,
+                    links: payload.links.unwrap_or_default(),
+                    owner: payload.owner,
+                    reviewer: payload.reviewer,
+                },
+            )?;
+            Ok(json_http("HTTP/1.1 201 Created", &decision)?)
+        }
+        _ => Ok((
+            "HTTP/1.1 404 Not Found",
+            "text/plain; charset=utf-8",
+            "Not found".to_string(),
+        )),
+    }
+}
+
+fn json_http<T: Serialize>(
+    status: &'static str,
+    value: &T,
+) -> Result<(&'static str, &'static str, String), serde_json::Error> {
+    Ok((
+        status,
+        "application/json; charset=utf-8",
+        serde_json::to_string(value)?,
+    ))
 }
 
 fn print_json<T: Serialize>(value: &T) -> Result<(), Box<dyn Error>> {

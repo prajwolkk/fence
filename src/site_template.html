@@ -87,7 +87,8 @@
       }
 
       .button,
-      .copy {
+      .copy,
+      .action {
         border: 1px solid var(--line);
         border-radius: 8px;
         background: var(--panel);
@@ -97,7 +98,8 @@
       }
 
       .button:hover,
-      .copy:hover {
+      .copy:hover,
+      .action:hover {
         border-color: var(--accent);
       }
 
@@ -185,6 +187,11 @@
         color: var(--good);
       }
 
+      .status.approved {
+        background: rgba(37, 99, 235, 0.12);
+        color: var(--accent);
+      }
+
       .status.stale,
       .status.proposed {
         background: rgba(183, 121, 31, 0.14);
@@ -238,11 +245,20 @@
 
       .idrow,
       .tags,
-      .links {
+      .links,
+      .actions {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 8px;
+      }
+
+      .actions {
+        margin-top: 12px;
+      }
+
+      .action.danger {
+        color: var(--bad);
       }
 
       .id {
@@ -398,6 +414,7 @@
 
     <script>
       const decisions = __FENCE_DATA__;
+      const writable = __FENCE_WRITABLE__;
       const searchInput = document.getElementById("searchInput");
       const statusFilter = document.getElementById("statusFilter");
       const categoryFilter = document.getElementById("categoryFilter");
@@ -429,6 +446,7 @@
           const reviewDate = new Date(decision.review_due);
           if (!Number.isNaN(reviewDate.getTime()) && reviewDate < new Date()) return "stale";
         }
+        if (decision.status === "approved") return "approved";
         return "accepted";
       };
 
@@ -439,7 +457,7 @@
           return acc;
         }, {});
 
-      const allStatuses = ["accepted", "stale", "deprecated", "superseded", "proposed"];
+      const allStatuses = ["accepted", "approved", "stale", "deprecated", "superseded", "proposed"];
       const categories = [...new Set(decisions.map((decision) => decision.category || "General"))].sort();
       const tags = [...new Set(decisions.flatMap((decision) => decision.optional_tags || []))].sort();
 
@@ -453,7 +471,7 @@
         const stale = decisions.filter((decision) => statusOf(decision) === "stale").length;
         const deprecated = decisions.filter((decision) => statusOf(decision) === "deprecated").length;
         const superseded = decisions.filter((decision) => statusOf(decision) === "superseded").length;
-        const healthy = decisions.filter((decision) => statusOf(decision) === "accepted").length;
+        const healthy = decisions.filter((decision) => ["accepted", "approved"].includes(statusOf(decision))).length;
         const needsAttention = decisions.filter((decision) => ["stale", "deprecated", "proposed"].includes(statusOf(decision))).length;
         const metrics = [
           ["Total decisions", decisions.length],
@@ -513,6 +531,19 @@
           ? links.map((link) => `<a class="link-button" href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${escapeHtml(link)}</a>`).join("")
           : "-";
 
+      const actionButtons = (decision) => {
+        if (!writable) return "";
+        return `
+          <div class="actions" aria-label="Decision actions">
+            <button class="action" type="button" data-action="edit" data-id="${escapeHtml(decision.id)}">Edit</button>
+            <button class="action" type="button" data-action="review" data-id="${escapeHtml(decision.id)}">Review</button>
+            <button class="action" type="button" data-action="approve" data-id="${escapeHtml(decision.id)}">Approve</button>
+            <button class="action" type="button" data-action="replace" data-id="${escapeHtml(decision.id)}">Supersede</button>
+            <button class="action danger" type="button" data-action="deprecate" data-id="${escapeHtml(decision.id)}">Deprecate</button>
+          </div>
+        `;
+      };
+
       const renderDecision = (decision) => {
         const status = statusOf(decision);
         const title = decision.title || decision.message;
@@ -532,11 +563,14 @@
             </div>
             <p class="message">${escapeHtml(decision.message)}</p>
             <div class="tags">${tagsMarkup(decision.optional_tags)}</div>
+            ${actionButtons(decision)}
             <details>
               <summary>Details</summary>
               <div class="detail-grid">
                 <div class="detail"><span>Review due</span><p>${escapeHtml(decision.review_due || "-")}</p></div>
                 <div class="detail"><span>Owner / reviewer</span><p>${escapeHtml(decision.owner || "-")} / ${escapeHtml(decision.reviewer || "-")}</p></div>
+                <div class="detail"><span>Approved by</span><p>${escapeHtml(decision.approved_by || "-")}</p></div>
+                <div class="detail"><span>Approved at</span><p>${escapeHtml(decision.approved_at || "-")}</p></div>
                 <div class="detail"><span>Supersedes</span><p>${relation(decision.supersedes)}</p></div>
                 <div class="detail"><span>Superseded by</span><p>${relation(decision.superseded_by)}</p></div>
                 <div class="detail"><span>Rationale</span><p>${escapeHtml(decision.rationale || "-")}</p></div>
@@ -587,6 +621,93 @@
         window.setTimeout(() => target.classList.remove("is-highlighted"), 1200);
       };
 
+      const csv = (value) =>
+        String(value || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
+
+      const postDecision = async (id, action, payload = {}) => {
+        const response = await fetch(`/api/decisions/${encodeURIComponent(id)}/${action}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return response.json();
+      };
+
+      const promptField = (label, current = "") => {
+        const value = window.prompt(label, current || "");
+        return value === null ? undefined : value;
+      };
+
+      const editDecision = async (decision) => {
+        const title = promptField("Title", decision.title || "");
+        if (title === undefined) return;
+        const tags = promptField("Tags, comma-separated", (decision.optional_tags || []).join(", "));
+        if (tags === undefined) return;
+        const owner = promptField("Owner, for example @platform", decision.owner || "");
+        if (owner === undefined) return;
+        const reviewer = promptField("Reviewer, for example @security", decision.reviewer || "");
+        if (reviewer === undefined) return;
+        const rationale = promptField("Rationale", decision.rationale || "");
+        if (rationale === undefined) return;
+        const consequences = promptField("Consequences", decision.consequences || "");
+        if (consequences === undefined) return;
+        const reviewDue = promptField("Review due date, YYYY-MM-DD", decision.review_due || "");
+        if (reviewDue === undefined) return;
+        await postDecision(decision.id, "edit", {
+          title,
+          optional_tags: csv(tags),
+          owner,
+          reviewer,
+          rationale,
+          consequences,
+          review_due: reviewDue,
+        });
+        window.location.reload();
+      };
+
+      const reviewDecision = async (decision) => {
+        const reviewDue = promptField("Next review due date, YYYY-MM-DD", decision.review_due || "");
+        if (reviewDue === undefined) return;
+        await postDecision(decision.id, "review", { review_due: reviewDue });
+        window.location.reload();
+      };
+
+      const replaceDecision = async (decision) => {
+        const message = promptField("Replacement decision", decision.message || "");
+        if (message === undefined || !message.trim()) return;
+        const title = promptField("Replacement title", decision.title || "");
+        if (title === undefined) return;
+        const rationale = promptField("Replacement rationale", decision.rationale || "");
+        if (rationale === undefined) return;
+        const consequences = promptField("Replacement consequences", decision.consequences || "");
+        if (consequences === undefined) return;
+        const tags = promptField("Tags, comma-separated", (decision.optional_tags || []).join(", "));
+        if (tags === undefined) return;
+        const owner = promptField("Owner", decision.owner || "");
+        if (owner === undefined) return;
+        const reviewer = promptField("Reviewer", decision.reviewer || "");
+        if (reviewer === undefined) return;
+        const reviewDue = promptField("Review due date, YYYY-MM-DD", decision.review_due || "");
+        if (reviewDue === undefined) return;
+        await postDecision(decision.id, "replace", {
+          message,
+          title,
+          rationale,
+          consequences,
+          optional_tags: csv(tags),
+          owner,
+          reviewer,
+          review_due: reviewDue,
+        });
+        window.location.reload();
+      };
+
       document.addEventListener("click", async (event) => {
         const copyButton = event.target.closest("[data-copy]");
         if (copyButton) {
@@ -596,6 +717,32 @@
         }
         const jumpButton = event.target.closest("[data-jump]");
         if (jumpButton) jumpTo(jumpButton.dataset.jump);
+        const actionButton = event.target.closest("[data-action]");
+        if (actionButton) {
+          const decision = decisions.find((item) => item.id === actionButton.dataset.id);
+          if (!decision) return;
+          try {
+            if (actionButton.dataset.action === "edit") {
+              await editDecision(decision);
+            } else if (actionButton.dataset.action === "review") {
+              await reviewDecision(decision);
+            } else if (actionButton.dataset.action === "approve") {
+              if (window.confirm(`Approve decision ${decision.id}?`)) {
+                await postDecision(decision.id, "approve");
+                window.location.reload();
+              }
+            } else if (actionButton.dataset.action === "replace") {
+              await replaceDecision(decision);
+            } else if (actionButton.dataset.action === "deprecate") {
+              if (window.confirm(`Deprecate decision ${decision.id}?`)) {
+                await postDecision(decision.id, "deprecate");
+                window.location.reload();
+              }
+            }
+          } catch (error) {
+            window.alert(error.message || "Fence action failed");
+          }
+        }
       });
 
       [searchInput, statusFilter, categoryFilter, tagFilter, sortOrder].forEach((control) => {
