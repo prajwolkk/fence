@@ -1,0 +1,21 @@
+- name: bug
+  color: d73a4a
+  description: Something is broken.
+- name: documentation
+  color: 0075ca
+  description: Documentation changes.
+- name: enhancement
+  color: a2eeef
+  description: New feature or improvement.
+- name: good first issue
+  color: 7057ff
+  description: Friendly issue for new contributors.
+- name: launch
+  color: 0e8a16
+  description: Work needed for a release.
+- name: sentinel
+  color: fbca04
+  description: CI, scoring, or enforcement behavior.
+- name: web-ui
+  color: 5319e7
+  description: Local web interface.
