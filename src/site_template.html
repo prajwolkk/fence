@@ -4,213 +4,629 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Fence Decisions</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --text: #17202a;
+        --muted: #5f6b7a;
+        --line: #dfe4ea;
+        --soft: #eef2f6;
+        --accent: #2563eb;
+        --good: #0f8a5f;
+        --warn: #b7791f;
+        --bad: #bf2f45;
+        --quiet: #697386;
+        --shadow: 0 10px 28px rgba(17, 24, 39, 0.08);
+      }
+
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #111418;
+        --panel: #191f27;
+        --text: #edf2f7;
+        --muted: #a8b3c2;
+        --line: #313946;
+        --soft: #242b35;
+        --accent: #70a5ff;
+        --good: #46c28c;
+        --warn: #f0b84a;
+        --bad: #ff778c;
+        --quiet: #a8b3c2;
+        --shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        line-height: 1.45;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .page {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0 44px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 32px;
+        letter-spacing: 0;
+      }
+
+      .lede {
+        margin: 6px 0 0;
+        color: var(--muted);
+      }
+
+      .button,
+      .copy {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        padding: 8px 10px;
+        min-height: 36px;
+      }
+
+      .button:hover,
+      .copy:hover {
+        border-color: var(--accent);
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 14px;
+        box-shadow: var(--shadow);
+      }
+
+      .metric span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 24px;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(130px, 180px));
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 16px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        padding: 10px 11px;
+        min-height: 40px;
+      }
+
+      input:focus,
+      select:focus,
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .filterbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 8px 0 18px;
+      }
+
+      .chip,
+      .status {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 9px;
+        background: var(--soft);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .status.accepted {
+        background: rgba(15, 138, 95, 0.12);
+        color: var(--good);
+      }
+
+      .status.stale,
+      .status.proposed {
+        background: rgba(183, 121, 31, 0.14);
+        color: var(--warn);
+      }
+
+      .status.deprecated {
+        background: rgba(191, 47, 69, 0.12);
+        color: var(--bad);
+      }
+
+      .status.superseded {
+        background: rgba(105, 115, 134, 0.16);
+        color: var(--quiet);
+      }
+
+      .timeline {
+        display: grid;
+        gap: 12px;
+      }
+
+      .decision {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 18px;
+        box-shadow: var(--shadow);
+      }
+
+      .decision:target,
+      .decision.is-highlighted {
+        border-color: var(--accent);
+      }
+
+      .decision-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .decision-title {
+        margin: 10px 0 6px;
+        font-size: 18px;
+      }
+
+      .message,
+      .meta,
+      .empty {
+        color: var(--muted);
+      }
+
+      .idrow,
+      .tags,
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .id {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+      }
+
+      .link-button {
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        padding: 0;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+
+      details {
+        margin-top: 12px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+
+      summary {
+        color: var(--accent);
+        cursor: pointer;
+        font-weight: 650;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .detail {
+        background: var(--soft);
+        border-radius: 8px;
+        padding: 10px;
+      }
+
+      .detail span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .detail p {
+        margin: 4px 0 0;
+      }
+
+      .empty {
+        display: none;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 28px;
+        text-align: center;
+      }
+
+      .empty strong {
+        display: block;
+        color: var(--text);
+        font-size: 18px;
+      }
+
+      footer {
+        margin-top: 26px;
+        color: var(--muted);
+        text-align: center;
+        font-size: 13px;
+      }
+
+      @media (max-width: 860px) {
+        .summary,
+        .controls,
+        .detail-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .controls label:first-child {
+          grid-column: 1 / -1;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .page {
+          width: min(100% - 20px, 1120px);
+          padding-top: 22px;
+        }
+
+        .topbar,
+        .decision-head {
+          flex-direction: column;
+        }
+
+        .summary,
+        .controls,
+        .detail-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
   </head>
-  <body class="bg-slate-50 text-slate-900">
-    <main class="max-w-5xl mx-auto px-6 py-10">
-      <header class="mb-8">
-        <h1 class="text-3xl font-semibold tracking-tight">Fence Decisions</h1>
-        <p class="text-slate-600 mt-2">
-          A timeline of architectural and product decisions captured with Fence.
-        </p>
+  <body>
+    <main class="page">
+      <header class="topbar">
+        <div>
+          <h1>Fence Decisions</h1>
+          <p class="lede">Architectural intent, review health, and decision history.</p>
+        </div>
+        <button id="themeToggle" class="button" type="button">Dark mode</button>
       </header>
 
-      <section class="mb-8 space-y-4">
-        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div class="flex-1">
-            <label class="text-sm text-slate-600">Search</label>
-            <input
-              id="searchInput"
-              type="text"
-              placeholder="Search by message, author, or tag"
-              class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-            />
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button data-category="All" class="category-pill bg-slate-900 text-white">All</button>
-            <button data-category="Architecture" class="category-pill bg-blue-600 text-white">Architecture</button>
-            <button data-category="Technical" class="category-pill bg-emerald-600 text-white">Technical</button>
-            <button data-category="Product" class="category-pill bg-amber-500 text-white">Product</button>
-            <button data-category="Security" class="category-pill bg-red-600 text-white">Security</button>
-            <button data-category="General" class="category-pill bg-slate-500 text-white">General</button>
-          </div>
-        </div>
-        <div id="activeFilters" class="text-sm text-slate-500"></div>
+      <section id="summary" class="summary" aria-label="Decision health summary"></section>
+
+      <section class="controls" aria-label="Filters">
+        <label>
+          Search
+          <input id="searchInput" type="search" placeholder="Press / to search decisions" />
+        </label>
+        <label>
+          Status
+          <select id="statusFilter"></select>
+        </label>
+        <label>
+          Category
+          <select id="categoryFilter"></select>
+        </label>
+        <label>
+          Tag
+          <select id="tagFilter"></select>
+        </label>
+        <label>
+          Sort
+          <select id="sortOrder">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </label>
       </section>
 
-      <section class="relative">
-        <div class="absolute left-5 top-0 h-full w-px bg-slate-200"></div>
-        <div id="timeline" class="space-y-6"></div>
+      <div id="activeFilters" class="filterbar"></div>
+      <section id="emptyState" class="empty">
+        <strong>No decisions yet</strong>
+        <p>Run <code>fence log "why this choice is intentional"</code> to create the first one.</p>
       </section>
+      <section id="timeline" class="timeline" aria-live="polite"></section>
 
-      <footer class="mt-12 text-center text-sm text-slate-500">
-        Generated by Fence.
-        <a
-          class="text-slate-700 underline underline-offset-4"
-          href="https://github.com/"
-          target="_blank"
-          rel="noreferrer"
-        >
-          Repo
-        </a>
-      </footer>
+      <footer>Generated by Fence. Refresh the page after logging or editing decisions.</footer>
     </main>
 
     <script>
       const decisions = __FENCE_DATA__;
-
-      const categoryClasses = {
-        Architecture: "bg-blue-100 text-blue-700",
-        Technical: "bg-emerald-100 text-emerald-700",
-        Product: "bg-amber-100 text-amber-700",
-        Security: "bg-red-100 text-red-700",
-        General: "bg-slate-200 text-slate-700",
-      };
-
-      const statusClasses = {
-        accepted: "bg-emerald-100 text-emerald-700",
-        stale: "bg-amber-100 text-amber-700",
-        deprecated: "bg-rose-100 text-rose-700",
-        superseded: "bg-slate-200 text-slate-600",
-        proposed: "bg-sky-100 text-sky-700",
-      };
-
-      const timelineDotClasses = {
-        accepted: "bg-emerald-600",
-        stale: "bg-amber-500",
-        deprecated: "bg-rose-600",
-        superseded: "bg-slate-400",
-        proposed: "bg-sky-500",
-      };
-
       const searchInput = document.getElementById("searchInput");
+      const statusFilter = document.getElementById("statusFilter");
+      const categoryFilter = document.getElementById("categoryFilter");
+      const tagFilter = document.getElementById("tagFilter");
+      const sortOrder = document.getElementById("sortOrder");
+      const summary = document.getElementById("summary");
       const timeline = document.getElementById("timeline");
-      const categoryButtons = document.querySelectorAll(".category-pill");
+      const emptyState = document.getElementById("emptyState");
       const activeFilters = document.getElementById("activeFilters");
+      const themeToggle = document.getElementById("themeToggle");
 
-      let activeCategory = "All";
-      let activeTag = null;
+      const escapeHtml = (value) =>
+        String(value || "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
 
-      const normalize = (value) => value.toLowerCase();
-      const computeStatus = (decision) => {
+      const normalize = (value) => String(value || "").toLowerCase();
+      const label = (value) => String(value || "unknown").replaceAll("_", " ").replace(/\b\w/g, (m) => m.toUpperCase());
+      const timestamp = (decision) => new Date(decision.timestamp.replace(" ", "T")).getTime() || 0;
+
+      const statusOf = (decision) => {
         if (decision.status === "deprecated") return "deprecated";
         if (decision.status === "superseded") return "superseded";
         if (decision.status === "proposed") return "proposed";
         if (decision.review_due) {
           const reviewDate = new Date(decision.review_due);
-          if (!Number.isNaN(reviewDate.getTime()) && reviewDate < new Date()) {
-            return "stale";
-          }
+          if (!Number.isNaN(reviewDate.getTime()) && reviewDate < new Date()) return "stale";
         }
         return "accepted";
       };
 
-      const statusLabel = (status) =>
-        status.charAt(0).toUpperCase() + status.slice(1);
+      const countBy = (items, mapper) =>
+        items.reduce((acc, item) => {
+          const key = mapper(item);
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {});
 
-      const matchesFilters = (decision) => {
-        const searchTerm = normalize(searchInput.value || "");
-        const searchable = [
-          decision.message,
-          decision.author,
-          decision.timestamp,
-          ...(decision.optional_tags || []),
-        ]
-          .join(" ")
-          .toLowerCase();
+      const allStatuses = ["accepted", "stale", "deprecated", "superseded", "proposed"];
+      const categories = [...new Set(decisions.map((decision) => decision.category || "General"))].sort();
+      const tags = [...new Set(decisions.flatMap((decision) => decision.optional_tags || []))].sort();
 
-        const matchesSearch = !searchTerm || searchable.includes(searchTerm);
-        const matchesCategory =
-          activeCategory === "All" || decision.category === activeCategory;
-        const matchesTag = !activeTag || (decision.optional_tags || []).includes(activeTag);
-
-        return matchesSearch && matchesCategory && matchesTag;
-      };
-
-      const renderTags = (tags) => {
-        if (!tags || tags.length === 0) {
-          return '<span class="text-xs text-slate-400">No tags</span>';
-        }
-        return tags
-          .map(
-            (tag) =>
-              `<button class="tag-pill" data-tag="${tag}">${tag}</button>`
-          )
+      const populateSelect = (select, allLabel, values, counts) => {
+        select.innerHTML = `<option value="all">${allLabel} (${decisions.length})</option>` + values
+          .map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(label(value))} (${counts[value] || 0})</option>`)
           .join("");
       };
 
+      const renderSummary = () => {
+        const stale = decisions.filter((decision) => statusOf(decision) === "stale").length;
+        const deprecated = decisions.filter((decision) => statusOf(decision) === "deprecated").length;
+        const superseded = decisions.filter((decision) => statusOf(decision) === "superseded").length;
+        const healthy = decisions.filter((decision) => statusOf(decision) === "accepted").length;
+        const needsAttention = decisions.filter((decision) => ["stale", "deprecated", "proposed"].includes(statusOf(decision))).length;
+        const metrics = [
+          ["Total decisions", decisions.length],
+          ["Healthy", healthy],
+          ["Needs attention", needsAttention],
+          ["Stale", stale],
+          ["Deprecated / superseded", `${deprecated} / ${superseded}`],
+        ];
+        summary.innerHTML = metrics
+          .map(([name, value]) => `<article class="metric"><span>${escapeHtml(name)}</span><strong>${escapeHtml(value)}</strong></article>`)
+          .join("");
+      };
+
+      const renderFilterOptions = () => {
+        populateSelect(statusFilter, "All statuses", allStatuses, countBy(decisions, statusOf));
+        populateSelect(categoryFilter, "All categories", categories, countBy(decisions, (decision) => decision.category || "General"));
+        populateSelect(tagFilter, "All tags", tags, countBy(decisions.flatMap((decision) => decision.optional_tags || []), (tag) => tag));
+      };
+
+      const searchableText = (decision) =>
+        [
+          decision.id,
+          decision.title,
+          decision.message,
+          decision.rationale,
+          decision.consequences,
+          decision.author,
+          decision.owner,
+          decision.reviewer,
+          ...(decision.links || []),
+          ...(decision.optional_tags || []),
+        ].join(" ");
+
+      const matches = (decision) => {
+        const term = normalize(searchInput.value);
+        const status = statusOf(decision);
+        const category = decision.category || "General";
+        const tags = decision.optional_tags || [];
+        return (
+          (!term || normalize(searchableText(decision)).includes(term)) &&
+          (statusFilter.value === "all" || status === statusFilter.value) &&
+          (categoryFilter.value === "all" || category === categoryFilter.value) &&
+          (tagFilter.value === "all" || tags.includes(tagFilter.value))
+        );
+      };
+
+      const relation = (id) =>
+        id ? `<button class="link-button" type="button" data-jump="${escapeHtml(id)}">${escapeHtml(id)}</button>` : "-";
+
+      const tagsMarkup = (tags) =>
+        tags && tags.length
+          ? tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join("")
+          : '<span class="chip">No tags</span>';
+
+      const linksMarkup = (links) =>
+        links && links.length
+          ? links.map((link) => `<a class="link-button" href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${escapeHtml(link)}</a>`).join("")
+          : "-";
+
       const renderDecision = (decision) => {
-        const tagMarkup = renderTags(decision.optional_tags);
-        const categoryClass = categoryClasses[decision.category] || categoryClasses.General;
-        const lifecycle = computeStatus(decision);
-        const statusClass = statusClasses[lifecycle] || statusClasses.accepted;
-        const dotClass = timelineDotClasses[lifecycle] || timelineDotClasses.accepted;
+        const status = statusOf(decision);
+        const title = decision.title || decision.message;
         return `
-          <article class="relative ml-12 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <span class="absolute -left-8 top-6 h-4 w-4 rounded-full ${dotClass}"></span>
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${categoryClass}">
-                ${decision.category}
-              </span>
-              <span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusClass}">
-                ${statusLabel(lifecycle)}
-              </span>
-              <span class="text-xs text-slate-500">${decision.timestamp}</span>
-              <span class="text-xs text-slate-500">by ${decision.author}</span>
+          <article id="decision-${escapeHtml(decision.id)}" class="decision" data-id="${escapeHtml(decision.id)}">
+            <div class="decision-head">
+              <div>
+                <div class="idrow">
+                  <span class="id">${escapeHtml(decision.id)}</span>
+                  <button class="copy" type="button" data-copy="${escapeHtml(decision.id)}">Copy ID</button>
+                  <span class="status ${escapeHtml(status)}">${escapeHtml(label(status))}</span>
+                  <span class="chip">${escapeHtml(decision.category || "General")}</span>
+                </div>
+                <h2 class="decision-title">${escapeHtml(title)}</h2>
+              </div>
+              <p class="meta">${escapeHtml(decision.timestamp)}<br />${escapeHtml(decision.author || "Unknown")}</p>
             </div>
-            <p class="mt-3 text-sm leading-relaxed text-slate-700">${decision.message}</p>
-            <p class="mt-3 text-xs text-slate-500">Review due: ${decision.review_due || "n/a"}</p>
-            <div class="mt-4 flex flex-wrap gap-2">${tagMarkup}</div>
+            <p class="message">${escapeHtml(decision.message)}</p>
+            <div class="tags">${tagsMarkup(decision.optional_tags)}</div>
+            <details>
+              <summary>Details</summary>
+              <div class="detail-grid">
+                <div class="detail"><span>Review due</span><p>${escapeHtml(decision.review_due || "-")}</p></div>
+                <div class="detail"><span>Owner / reviewer</span><p>${escapeHtml(decision.owner || "-")} / ${escapeHtml(decision.reviewer || "-")}</p></div>
+                <div class="detail"><span>Supersedes</span><p>${relation(decision.supersedes)}</p></div>
+                <div class="detail"><span>Superseded by</span><p>${relation(decision.superseded_by)}</p></div>
+                <div class="detail"><span>Rationale</span><p>${escapeHtml(decision.rationale || "-")}</p></div>
+                <div class="detail"><span>Consequences</span><p>${escapeHtml(decision.consequences || "-")}</p></div>
+                <div class="detail"><span>Links</span><p class="links">${linksMarkup(decision.links)}</p></div>
+                <div class="detail"><span>Branch</span><p>${escapeHtml(decision.branch || "-")}</p></div>
+              </div>
+            </details>
           </article>
         `;
       };
 
-      const renderTimeline = () => {
-        const filtered = decisions.filter(matchesFilters);
+      const renderActiveFilters = (visibleCount) => {
+        const parts = [`Showing ${visibleCount} of ${decisions.length}`];
+        if (statusFilter.value !== "all") parts.push(`Status: ${label(statusFilter.value)}`);
+        if (categoryFilter.value !== "all") parts.push(`Category: ${categoryFilter.value}`);
+        if (tagFilter.value !== "all") parts.push(`Tag: ${tagFilter.value}`);
+        activeFilters.innerHTML = parts.map((part) => `<span class="chip">${escapeHtml(part)}</span>`).join("");
+      };
+
+      const render = () => {
+        const filtered = decisions
+          .filter(matches)
+          .sort((a, b) => sortOrder.value === "newest" ? timestamp(b) - timestamp(a) : timestamp(a) - timestamp(b));
         timeline.innerHTML = filtered.map(renderDecision).join("");
-
-        const parts = [];
-        if (activeCategory && activeCategory !== "All") {
-          parts.push(`Category: ${activeCategory}`);
-        }
-        if (activeTag) {
-          parts.push(`Tag: ${activeTag}`);
-        }
-        activeFilters.textContent = parts.length ? `Active filters: ${parts.join(" · ")}` : "";
-
-        document.querySelectorAll(".tag-pill").forEach((button) => {
-          button.addEventListener("click", () => {
-            activeTag = button.dataset.tag;
-            renderTimeline();
-          });
-        });
+        emptyState.style.display = filtered.length ? "none" : "block";
+        renderActiveFilters(filtered.length);
       };
 
-      const updateCategory = (category) => {
-        activeCategory = category;
-        activeTag = null;
-        categoryButtons.forEach((button) => {
-          button.classList.toggle("ring-2", button.dataset.category === category);
-          button.classList.toggle("ring-offset-2", button.dataset.category === category);
-        });
-        renderTimeline();
+      const copyText = async (text) => {
+        if (navigator.clipboard) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const input = document.createElement("input");
+        input.value = text;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
       };
 
-      searchInput.addEventListener("input", renderTimeline);
-      categoryButtons.forEach((button) => {
-        button.addEventListener("click", () => updateCategory(button.dataset.category));
+      const jumpTo = (id) => {
+        const target = document.getElementById(`decision-${id}`);
+        if (!target) return;
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("is-highlighted");
+        window.setTimeout(() => target.classList.remove("is-highlighted"), 1200);
+      };
+
+      document.addEventListener("click", async (event) => {
+        const copyButton = event.target.closest("[data-copy]");
+        if (copyButton) {
+          await copyText(copyButton.dataset.copy);
+          copyButton.textContent = "Copied";
+          window.setTimeout(() => (copyButton.textContent = "Copy ID"), 900);
+        }
+        const jumpButton = event.target.closest("[data-jump]");
+        if (jumpButton) jumpTo(jumpButton.dataset.jump);
+      });
+
+      [searchInput, statusFilter, categoryFilter, tagFilter, sortOrder].forEach((control) => {
+        control.addEventListener("input", render);
+        control.addEventListener("change", render);
       });
 
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") {
-          activeTag = null;
-          updateCategory("All");
-          searchInput.value = "";
-          renderTimeline();
+        const tag = document.activeElement?.tagName;
+        if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(tag)) {
+          event.preventDefault();
+          searchInput.focus();
         }
       });
 
-      renderTimeline();
+      themeToggle.addEventListener("click", () => {
+        const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+        document.documentElement.dataset.theme = next;
+        localStorage.setItem("fence-theme", next);
+        themeToggle.textContent = next === "dark" ? "Light mode" : "Dark mode";
+      });
+
+      const savedTheme = localStorage.getItem("fence-theme");
+      if (savedTheme === "dark") {
+        document.documentElement.dataset.theme = "dark";
+        themeToggle.textContent = "Light mode";
+      }
+
+      renderSummary();
+      renderFilterOptions();
+      render();
     </script>
   </body>
 </html>
