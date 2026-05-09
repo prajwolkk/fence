@@ -29,3 +29,6 @@ jobs:
 
       - name: Test
         run: cargo test -- --test-threads=1
+
+      - name: Launch smoke
+        run: scripts/launch-smoke.sh

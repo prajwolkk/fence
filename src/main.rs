@@ -63,6 +63,26 @@ enum Commands {
     Amend,
     Edit {
         id: String,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(short, long)]
+        category: Option<String>,
+        #[arg(short, long)]
+        tags: Option<String>,
+        #[arg(long)]
+        review_due: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        rationale: Option<String>,
+        #[arg(long)]
+        consequences: Option<String>,
+        #[arg(long = "link")]
+        links: Vec<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        reviewer: Option<String>,
     },
     Review {
         id: String,
@@ -213,8 +233,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Amend => {
             run_amend()?;
         }
-        Commands::Edit { id } => {
-            run_edit(&id)?;
+        Commands::Edit {
+            id,
+            message,
+            category,
+            tags,
+            review_due,
+            title,
+            rationale,
+            consequences,
+            links,
+            owner,
+            reviewer,
+        } => {
+            run_edit(EditOptions {
+                id,
+                message,
+                category,
+                tags,
+                review_due,
+                title,
+                rationale,
+                consequences,
+                links,
+                owner,
+                reviewer,
+            })?;
         }
         Commands::Review { id, review_due } => {
             if let Some(decision) = fence::review_decision(&id, review_due.as_deref())? {
@@ -729,7 +773,91 @@ fn run_amend() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_edit(id: &str) -> Result<(), Box<dyn Error>> {
+#[derive(Debug)]
+struct EditOptions {
+    id: String,
+    message: Option<String>,
+    category: Option<String>,
+    tags: Option<String>,
+    review_due: Option<String>,
+    title: Option<String>,
+    rationale: Option<String>,
+    consequences: Option<String>,
+    links: Vec<String>,
+    owner: Option<String>,
+    reviewer: Option<String>,
+}
+
+impl EditOptions {
+    fn is_noninteractive(&self) -> bool {
+        self.message.is_some()
+            || self.category.is_some()
+            || self.tags.is_some()
+            || self.review_due.is_some()
+            || self.title.is_some()
+            || self.rationale.is_some()
+            || self.consequences.is_some()
+            || !self.links.is_empty()
+            || self.owner.is_some()
+            || self.reviewer.is_some()
+    }
+}
+
+fn run_edit(options: EditOptions) -> Result<(), Box<dyn Error>> {
+    if options.is_noninteractive() {
+        return run_edit_noninteractive(options);
+    }
+
+    run_edit_interactive(&options.id)
+}
+
+fn run_edit_noninteractive(options: EditOptions) -> Result<(), Box<dyn Error>> {
+    let id = options.id.clone();
+    let edited = fence::update_decision(&id, |decision| {
+        if let Some(title) = options.title {
+            decision.title = optional_value(title);
+        }
+        if let Some(message) = options.message {
+            decision.message = message;
+        }
+        if let Some(rationale) = options.rationale {
+            decision.rationale = optional_value(rationale);
+        }
+        if let Some(consequences) = options.consequences {
+            decision.consequences = optional_value(consequences);
+        }
+        if let Some(category) = options.category {
+            decision.category = parse_category(Some(category));
+        }
+        if let Some(tags) = options.tags {
+            decision.optional_tags = parse_tags(Some(tags));
+        }
+        if !options.links.is_empty() {
+            decision.links = options.links;
+        }
+        if let Some(owner) = options.owner {
+            decision.owner = optional_value(owner);
+        }
+        if let Some(reviewer) = options.reviewer {
+            decision.reviewer = optional_value(reviewer);
+        }
+        if let Some(review_due) = options.review_due {
+            decision.review_due = fence::normalize_review_due(Some(&review_due))?;
+        }
+        Ok(())
+    })?;
+
+    if let Some(decision) = edited {
+        println!("Decision {} updated.", decision.id);
+    } else {
+        println!("Decision not found or ID prefix is ambiguous: {id}");
+        process::exit(1);
+    }
+
+    Ok(())
+}
+
+fn run_edit_interactive(id: &str) -> Result<(), Box<dyn Error>> {
     let Some(entry) = fence::find_decision_file(id)? else {
         println!("Decision not found or ID prefix is ambiguous: {id}");
         process::exit(1);
