@@ -296,10 +296,14 @@ fence 0.1.0
 .github/               Issue templates, PR template, CI, and release automation
 docs/                  Focused docs and copy-paste examples
 examples/              Small sample repo state for demos
-src/lib.rs             Core Fence engine
-src/main.rs            CLI command routing
-src/tui.rs             Interactive terminal browser
-src/site_template.html Static timeline template
+src/main.rs            Thin binary entrypoint
+src/cli.rs             Command parsing and command orchestration
+src/model.rs           Config, decision schema, and status/category types
+src/repository.rs      Decision storage, markdown export, migration, and sync checks
+src/sentinel.rs        Diff scoring, config validation, and Sentinel checks
+src/serve.rs           Writable local web UI server
+src/tui.rs             Terminal browser
+src/site_template.html Self-contained web UI template
 DECISIONS.md           Generated human-readable decision table
 fence.toml             Fence config for this repo
 ```
