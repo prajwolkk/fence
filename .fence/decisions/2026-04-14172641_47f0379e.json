@@ -1,0 +1,11 @@
+{
+  "id": "47f0379e",
+  "timestamp": "2026-04-14 17:26:41",
+  "author": "kharelprajwol",
+  "branch": "",
+  "message": "Decided to use Rust for the core engine",
+  "category": "General",
+  "optional_tags": [],
+  "status": "accepted",
+  "review_due": "2027-05-09T02:02:15.845124405+05:45"
+}

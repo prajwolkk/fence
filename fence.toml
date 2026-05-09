@@ -1,0 +1,16 @@
+project_name = "fence"
+mode = "Solo"
+log_path = ".fence/decisions"
+auto_export = true
+monitored_paths = ["Cargo.toml", "src"]
+ignored_paths = ["target/**", ".git/**", "docs/assets/**"]
+standalone_mode = false
+safe_sync = true
+sentinel_enabled = true
+sentinel_platform = "GitHub"
+enforcement_level = "Blocking"
+threshold = 10
+
+[scoring]
+"Cargo.toml" = 10
+"src/**/*.rs" = 2
