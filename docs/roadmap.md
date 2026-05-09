@@ -12,6 +12,7 @@ Fence v1 is the open-source local-first foundation. The CLI, structured decision
 - Sentinel CI enforcement.
 - JSON and Markdown automation output.
 - Demo repo and launch smoke test.
+- AI agent guardrails with `fence ask`, `fence agent-check`, and repo-native agent instruction files.
 
 ## Near-Term OSS
 

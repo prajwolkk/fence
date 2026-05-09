@@ -12,6 +12,7 @@ cargo run -- doctor
 cargo run -- check
 cargo run -- --version
 cargo run -- ask fence
+cargo run -- agent-check --base HEAD~1
 cargo run -- demo --path /tmp/fence-demo --force
 scripts/launch-smoke.sh
 ```
@@ -26,6 +27,7 @@ Verify:
 - `fence sentinel check --json` returns automation-friendly JSON.
 - `fence sentinel check --markdown` renders GitHub-summary-ready Markdown.
 - `fence demo` creates a complete failing-then-fixed demo repo.
+- `AGENTS.md`, `CLAUDE.md`, and `.cursor/rules/fence.mdc` are present for AI coding agents.
 - `scripts/launch-smoke.sh` passes from a clean checkout.
 - Team web sharing docs explain static hosting and private local serving.
 

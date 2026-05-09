@@ -33,6 +33,8 @@ fence show <id> --json
 fence search database
 fence ask "why did we choose postgres?"
 fence ask "auth owner" --json
+fence agent-check --staged
+fence agent-check --base origin/main --markdown
 fence browse
 fence stats
 fence stats --json

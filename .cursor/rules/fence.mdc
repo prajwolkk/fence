@@ -1,0 +1,23 @@
+---
+description: Fence architectural memory and launch-safety rules
+alwaysApply: true
+---
+
+# Fence Rules
+
+Before changing architecture, dependencies, storage, auth, CI, release, or public CLI behavior:
+
+1. Inspect `.fence/decisions/`.
+2. Run `fence ask "<topic>"`.
+3. Stage your intended changes.
+4. Run `fence agent-check --staged`.
+
+If `fence agent-check --staged` fails, record a decision with `fence log`, then stage `.fence/decisions` and `DECISIONS.md`.
+
+Do not use `[skip fence]` or `nolog` unless the maintainer explicitly requests a bypass.
+
+Before launch-readiness claims, run:
+
+```sh
+scripts/launch-smoke.sh
+```

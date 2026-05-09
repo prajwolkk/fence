@@ -65,6 +65,19 @@ Use the release binary in CI:
 
 See [examples/fence-sentinel.github-actions.yml](examples/fence-sentinel.github-actions.yml).
 
+For PR comments, use [examples/fence-sentinel-pr-comment.github-actions.yml](examples/fence-sentinel-pr-comment.github-actions.yml).
+
+## Agent Preflight
+
+AI coding agents can run the same guardrail before handing work back:
+
+```sh
+git add <changed-files>
+fence agent-check --staged
+```
+
+This checks the staged diff and fails when an architectural change needs a decision.
+
 ## Bypasses
 
 Sentinel recognizes these phrases in the latest commit message:

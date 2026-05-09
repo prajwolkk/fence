@@ -10,11 +10,13 @@ Fence records architectural decisions, serves local architectural memory, and bl
 
 - `fence demo`: one-command demo repo showing Sentinel fail, decision log, Sentinel pass, and local UI.
 - `fence ask <query>`: local architectural-memory search that cites decision IDs.
+- `fence agent-check --staged`: preflight guardrail for AI coding agents.
 - `fence sentinel check --markdown`: PR-summary-ready Sentinel output.
 - `fence sentinel init --github --yes`: non-interactive GitHub Action setup.
 - `scripts/launch-smoke.sh`: repeatable end-to-end launch certification.
 - Release binaries for Linux and macOS.
 - README above-the-fold demo with screenshots.
+- Agent instructions for Codex, Claude Code, and Cursor.
 - Docs for solo flow, team flow, Sentinel flow, and release verification.
 - GitHub Action sample using release binaries.
 - Security policy, code of conduct, contributing guide, issue templates, labels, and release checklist.

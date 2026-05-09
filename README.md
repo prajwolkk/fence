@@ -97,9 +97,10 @@ fence show <id>
 fence show <id> --json
 fence search billing
 fence ask "why did we choose postgres?"
+fence agent-check --staged
 ```
 
-Lists, opens, searches, and asks lightweight architectural-memory questions over local decisions.
+Lists, opens, searches, asks lightweight architectural-memory questions, and gives AI agents a staged preflight check.
 
 ```sh
 fence amend
@@ -236,6 +237,7 @@ Use bypasses sparingly. The point is not bureaucracy; the point is keeping inten
 Fence ships with CI and release workflows in `.github/workflows`.
 
 There is also a sample Sentinel workflow at [docs/examples/fence-sentinel.github-actions.yml](docs/examples/fence-sentinel.github-actions.yml).
+For PR comments, use [docs/examples/fence-sentinel-pr-comment.github-actions.yml](docs/examples/fence-sentinel-pr-comment.github-actions.yml).
 
 To publish binaries, tag the release:
 
@@ -261,9 +263,11 @@ fence 0.1.0
 - [Commands](docs/commands.md)
 - [Configuration](docs/configuration.md)
 - [Demo scenario](docs/demo.md)
+- [AI agent guardrails](docs/ai-agents.md)
 - [Sentinel](docs/sentinel.md)
 - [Web UI](docs/web-ui.md)
 - [Team web sharing](docs/team-web-sharing.md)
+- [Launch kit](docs/launch-kit.md)
 - [Release checklist](docs/release-checklist.md)
 - [Schema and migrations](docs/schema-and-migrations.md)
 - [Roadmap](docs/roadmap.md)
