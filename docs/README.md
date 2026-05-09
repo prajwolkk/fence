@@ -4,6 +4,7 @@ This folder holds focused documentation and copy-paste examples.
 
 - [Commands](commands.md)
 - [Configuration](configuration.md)
+- [Architecture](architecture.md)
 - [Solo developer guide](solo-developer-guide.md)
 - [Small team guide](small-team-guide.md)
 - [Decision lifecycle guide](decision-lifecycle-guide.md)

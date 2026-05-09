@@ -1,4 +1,15 @@
-/target
+/target/
+
+# Local Codex/session state
 .codex
+.codex/
+
+# Generated Fence artifacts
 decisions.log
 fence-site/
+fence-demo/
+
+# Local logs and OS/editor noise
+*.log
+*.tmp
+.DS_Store
