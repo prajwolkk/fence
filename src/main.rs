@@ -846,7 +846,7 @@ fn ask_decisions(query: &str, limit: usize) -> Result<Vec<AskDecisionResult>, Bo
                 .sum::<usize>();
             let category = fence::decision_category_label(decision.category).to_string();
             let status = fence::decision_status_label(&decision).to_string();
-            (score > 0).then(|| AskDecisionResult {
+            (score > 0).then_some(AskDecisionResult {
                 id: decision.id,
                 score,
                 title: decision.title,
