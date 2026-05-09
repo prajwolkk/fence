@@ -331,16 +331,24 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         }
         Commands::Approve { id, search, json } => {
             let id = resolve_decision_id(id, search)?;
-            if let Some(decision) = fence::approve_decision(&id)? {
-                if json {
-                    print_json(&decision)?;
-                } else {
-                    let approver = decision.approved_by.as_deref().unwrap_or("unknown");
-                    println!("Decision {} approved by {}.", decision.id, approver);
+            match fence::approve_decision(&id) {
+                Ok(Some(decision)) => {
+                    if json {
+                        print_json(&decision)?;
+                    } else {
+                        let approver = decision.approved_by.as_deref().unwrap_or("unknown");
+                        println!("Decision {} approved by {}.", decision.id, approver);
+                    }
                 }
-            } else {
-                println!("Decision not found or ID prefix is ambiguous: {id}");
-                process::exit(1);
+                Ok(None) => {
+                    println!("Decision not found or ID prefix is ambiguous: {id}");
+                    process::exit(1);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::InvalidInput => {
+                    println!("Decision {id} cannot be approved: {err}");
+                    process::exit(1);
+                }
+                Err(err) => return Err(Box::new(err)),
             }
         }
         Commands::Show { id, json } => {
