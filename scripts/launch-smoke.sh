@@ -140,6 +140,9 @@ step "running Rust quality gates"
 (cd "${ROOT}" && cargo build)
 (cd "${ROOT}" && cargo build --release)
 [[ "$("${ROOT}/target/release/fence" --version)" == "fence 0.1.0" ]] || fail "release binary version mismatch"
+"${FENCE}" completions bash | head -n 1 >/dev/null
+"${FENCE}" completions fish | head -n 1 >/dev/null
+"${FENCE}" completions zsh | head -n 1 >/dev/null
 
 step "testing solo flow without Git"
 NO_GIT="${TMP_ROOT}/solo-no-git"

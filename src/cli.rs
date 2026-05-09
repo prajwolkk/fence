@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
+use std::io::{self, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command as ProcessCommand};
@@ -583,8 +584,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             }
         },
         Commands::Completions { shell } => {
-            let mut command = Cli::command();
-            clap_complete::generate(shell, &mut command, "fence", &mut std::io::stdout());
+            print_completions(shell)?;
         }
         Commands::Demo { path, force } => {
             run_demo(&path, force)?;
@@ -1751,6 +1751,18 @@ fn run_doctor() -> Result<(), Box<dyn Error>> {
 fn print_json<T: Serialize>(value: &T) -> Result<(), Box<dyn Error>> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn print_completions(shell: Shell) -> Result<(), Box<dyn Error>> {
+    let mut command = Cli::command();
+    let mut output = Vec::new();
+    clap_complete::generate(shell, &mut command, "fence", &mut output);
+
+    match io::stdout().write_all(&output) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(err) => Err(Box::new(err)),
+    }
 }
 
 fn print_sentinel_report(result: &fence::SentinelCheckResult) {
