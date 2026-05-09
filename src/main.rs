@@ -1,28 +1,22 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::io;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::process;
-use std::time::Duration;
+use std::process::{self, Command as ProcessCommand};
 
-use clap::{Parser, Subcommand};
-use crossterm::{
-    event::{self, Event, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use dialoguer::{Confirm, Input, Select};
 use fence::{
-    config_path, default_project_name, ensure_decisions_dir, ensure_gitignore_contains,
-    git_hooks_path, git_remote_platform, has_git_directory, install_pre_commit_hook,
-    remove_ignore_entry, sanitize_project_name, FenceConfig, FenceManager, FenceMode,
-    NotificationProvider, NotificationsConfig, TeamSettings,
+    DecisionRecordOptions, FenceConfig, FenceManager, FenceMode, NotificationProvider,
+    NotificationsConfig, TeamSettings, config_path, default_project_name, ensure_decisions_dir,
+    ensure_gitignore_contains, git_hooks_path, git_remote_platform, has_git_directory,
+    install_pre_commit_hook, remove_ignore_entry, sanitize_project_name,
 };
-use ratatui::{
-    prelude::*,
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-};
+use serde::Serialize;
+
+mod tui;
 
 #[derive(Parser)]
 #[command(name = "fence", version = "0.1.0")]
@@ -32,8 +26,16 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
-    Init,
+    Init {
+        #[arg(long)]
+        yes: bool,
+        #[arg(long, conflicts_with = "solo")]
+        team: bool,
+        #[arg(long, conflicts_with = "team")]
+        solo: bool,
+    },
     Log {
         message: String,
         #[arg(short, long)]
@@ -42,21 +44,84 @@ enum Commands {
         tags: Option<String>,
         #[arg(long)]
         replaces: Option<String>,
+        #[arg(long)]
+        review_due: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        rationale: Option<String>,
+        #[arg(long)]
+        consequences: Option<String>,
+        #[arg(long = "link")]
+        links: Vec<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        reviewer: Option<String>,
     },
     Amend,
+    Edit {
+        id: String,
+    },
+    Review {
+        id: String,
+        #[arg(long)]
+        review_due: Option<String>,
+    },
     Deprecate {
         id: String,
     },
-    List,
-    Search { keyword: String },
+    Show {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    Search {
+        keyword: String,
+    },
     Check,
     Export,
+    Migrate {
+        #[arg(long, default_value = "decisions.log")]
+        from: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Browse,
     Site,
-    Stats,
+    Serve {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: IpAddr,
+        #[arg(short, long, default_value_t = 7878)]
+        port: u16,
+        #[arg(long)]
+        open: bool,
+    },
+    Open {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: IpAddr,
+        #[arg(short, long, default_value_t = 7878)]
+        port: u16,
+    },
+    Stats {
+        #[arg(long)]
+        json: bool,
+    },
+    Stale {
+        #[arg(long)]
+        json: bool,
+    },
+    Doctor,
     Sentinel {
         #[command(subcommand)]
         command: SentinelCommands,
+    },
+    Completions {
+        shell: Shell,
     },
     Badge,
 }
@@ -67,6 +132,18 @@ enum SentinelCommands {
     Check {
         #[arg(long)]
         base: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Explain {
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Validate {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -74,20 +151,56 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init => run_init()?,
+        Commands::Init { yes, team, solo } => run_init(InitOptions { yes, team, solo })?,
         Commands::Log {
             message,
             category,
             tags,
             replaces,
+            review_due,
+            title,
+            rationale,
+            consequences,
+            links,
+            owner,
+            reviewer,
         } => {
-            let category = parse_category(category);
-            let tags = parse_tags(tags);
-            FenceManager::record_with_options(&message, category, tags, replaces)?;
-            println!("🚀 Decision recorded and DECISIONS.md updated!");
+            let decision = FenceManager::record_with_details(
+                &message,
+                DecisionRecordOptions {
+                    category: parse_category(category),
+                    optional_tags: parse_tags(tags),
+                    replaces,
+                    review_due,
+                    title,
+                    rationale,
+                    consequences,
+                    links,
+                    owner,
+                    reviewer,
+                },
+            )?;
+            println!(
+                "🚀 Decision recorded: {}. DECISIONS.md updated.",
+                decision.id
+            );
         }
         Commands::Amend => {
             run_amend()?;
+        }
+        Commands::Edit { id } => {
+            run_edit(&id)?;
+        }
+        Commands::Review { id, review_due } => {
+            if let Some(decision) = fence::review_decision(&id, review_due.as_deref())? {
+                println!(
+                    "Decision {} reviewed. Next review due: {}",
+                    decision.id, decision.review_due
+                );
+            } else {
+                println!("Decision not found or ID prefix is ambiguous: {id}");
+                process::exit(1);
+            }
         }
         Commands::Deprecate { id } => {
             if fence::deprecate_decision(&id)? {
@@ -97,9 +210,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 process::exit(1);
             }
         }
-        Commands::List => {
-            println!("\n📖 --- DECISION HISTORY ---");
-            println!("{}", FenceManager::list());
+        Commands::Show { id, json } => {
+            if let Some(entry) = fence::find_decision_file(&id)? {
+                if json {
+                    print_json(&entry.decision)?;
+                } else {
+                    println!("{}", fence::decision_detail(&entry.decision));
+                }
+            } else {
+                println!("Decision not found or ID prefix is ambiguous: {id}");
+                process::exit(1);
+            }
+        }
+        Commands::List { json } => {
+            if json {
+                print_json(&fence::read_log_entries()?)?;
+            } else {
+                println!("\n📖 --- DECISION HISTORY ---");
+                println!("{}", FenceManager::list());
+            }
         }
         Commands::Search { keyword } => {
             let results = FenceManager::search(&keyword);
@@ -109,16 +238,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         Commands::Check => {
-            let in_sync = fence::check_sync()?;
+            let sync = fence::sync_status()?;
             let (tracking_ok, log_status, md_status) = fence::check_tracking_integrity()?;
-            if !in_sync || !tracking_ok {
-                if !in_sync {
+            if !sync.in_sync || !tracking_ok {
+                if !sync.in_sync {
                     println!(
-                        "Sync Error: DECISIONS.md is out of sync. Run 'fence export' to fix it."
+                        "Sync Error: DECISIONS.md has {} rows, but Fence has {} decisions. Run 'fence export' to fix it.",
+                        sync.markdown_count, sync.decision_count
                     );
                 }
                 if !tracking_ok {
-                    println!("Tracking Error: tracked files are out of sync with the staged versions.");
+                    println!(
+                        "Tracking Error: tracked files are out of sync with the staged versions."
+                    );
                 }
                 println!(
                     "Status: Log={} MD={}",
@@ -131,68 +263,114 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Export => {
             fence::export_markdown()?;
         }
+        Commands::Migrate { from, dry_run } => {
+            let report = fence::migrate_legacy_log(Path::new(&from), dry_run)?;
+            let verb = if dry_run { "Would migrate" } else { "Migrated" };
+            println!("{verb} {} legacy decisions from {from}.", report.migrated);
+            println!(
+                "Scanned: {}  Skipped existing: {}  Ignored: {}",
+                report.scanned, report.skipped_existing, report.ignored
+            );
+        }
         Commands::Browse => {
-            run_browse()?;
+            tui::run_browse()?;
         }
         Commands::Site => {
             let path = fence::generate_site()?;
             println!("Generated site at {}", path.display());
         }
-        Commands::Stats => {
-            let stats = fence::health_stats()?;
-            let count = fence::log_entry_count()?;
-            println!("Decisions: {count}");
-            println!("Healthy: {}", stats.healthy);
-            println!("Needs attention: {}", stats.unhealthy);
-            println!("Health Ratio: {:.1}%", stats.ratio);
+        Commands::Serve { host, port, open } => {
+            run_serve(host, port, open)?;
+        }
+        Commands::Open { host, port } => {
+            run_serve(host, port, true)?;
+        }
+        Commands::Stats { json } => {
+            if json {
+                print_json(&fence::decision_status_counts()?)?;
+            } else {
+                let stats = fence::health_stats()?;
+                let count = fence::log_entry_count()?;
+                println!("Decisions: {count}");
+                println!("Healthy: {}", stats.healthy);
+                println!("Needs attention: {}", stats.unhealthy);
+                println!("Health Ratio: {:.1}%", stats.ratio);
+            }
+        }
+        Commands::Stale { json } => {
+            let stale = fence::stale_decisions()?;
+            if json {
+                print_json(&stale)?;
+            } else if stale.is_empty() {
+                println!("No stale decisions.");
+            } else {
+                for decision in stale {
+                    println!("{}", fence::decision_summary_line(&decision));
+                }
+            }
+        }
+        Commands::Doctor => {
+            run_doctor()?;
         }
         Commands::Sentinel { command } => match command {
             SentinelCommands::Init => {
-                if !has_git_directory() {
-                    println!(
-                        "The Sentinel requires a Git repository. Please run git init first."
-                    );
-                    process::exit(1);
-                }
-                println!("Sentinel setup is not yet implemented in this build.");
+                run_sentinel_init()?;
             }
-            SentinelCommands::Check { base } => {
+            SentinelCommands::Check { base, json } => {
                 if !has_git_directory() {
-                    println!(
-                        "The Sentinel requires a Git repository. Please run git init first."
-                    );
+                    println!("The Sentinel requires a Git repository. Please run git init first.");
                     process::exit(1);
                 }
                 let result = fence::sentinel_check(base)?;
                 let enforcement = fence::load_runtime_config().enforcement_level;
-                if result.bypassed {
-                    println!("✅ Sentinel bypassed for latest commit.");
+                if json {
+                    print_json(&result)?;
+                    if result.missing_decision && enforcement == fence::EnforcementLevel::Blocking {
+                        process::exit(1);
+                    }
                     return Ok(());
                 }
-                if result.changed_files == 0 {
-                    println!("✅ No monitored changes detected.");
-                    return Ok(());
-                }
-                if result.decision_found {
-                    println!(
-                        "✅ Decision found for {} modified files.",
-                        result.changed_files
-                    );
-                } else {
+                print_sentinel_report(&result);
+                if result.missing_decision {
                     match enforcement {
                         fence::EnforcementLevel::Warning => {
                             println!(
-                                "WARNING: Architectural change detected without log. Enforcement level is Warning."
+                                "WARNING: Architectural change detected without a decision. Enforcement level is Warning."
                             );
                         }
                         fence::EnforcementLevel::Blocking => {
-                            println!("❌ Architectural change detected without log.");
+                            println!(
+                                "Run `fence log \"why this change is intentional\"` and commit the generated .fence/decisions file."
+                            );
                             process::exit(1);
                         }
                     }
                 }
             }
+            SentinelCommands::Explain { base, json } => {
+                let result = fence::sentinel_explain(base)?;
+                if json {
+                    print_json(&result)?;
+                } else {
+                    print_sentinel_report(&result);
+                }
+            }
+            SentinelCommands::Validate { json } => {
+                let report = fence::validate_config(&fence::load_runtime_config());
+                if json {
+                    print_json(&report)?;
+                } else {
+                    print_config_validation(&report);
+                }
+                if !report.valid {
+                    process::exit(1);
+                }
+            }
         },
+        Commands::Completions { shell } => {
+            let mut command = Cli::command();
+            clap_complete::generate(shell, &mut command, "fence", &mut std::io::stdout());
+        }
         Commands::Badge => {
             let count = fence::log_entry_count()?;
             let snippet = format!(
@@ -206,7 +384,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_init() -> Result<(), Box<dyn Error>> {
+#[derive(Debug, Clone, Copy)]
+struct InitOptions {
+    yes: bool,
+    team: bool,
+    solo: bool,
+}
+
+fn run_init(options: InitOptions) -> Result<(), Box<dyn Error>> {
+    if options.yes {
+        return run_init_noninteractive(options);
+    }
+
     let config_path = config_path();
 
     if config_path.exists() {
@@ -232,21 +421,22 @@ fn run_init() -> Result<(), Box<dyn Error>> {
         println!("Using sanitized project name: {project_name}");
     }
 
-    let mode_index = Select::new()
-        .with_prompt("Fence Mode")
-        .items(["Solo (Local/Personal)", "Team (Shared/Collaborative)"])
-        .default(0)
-        .interact()?;
+    let mode_index = if options.team {
+        1
+    } else if options.solo {
+        0
+    } else {
+        Select::new()
+            .with_prompt("Fence Mode")
+            .items(["Solo (Local/Personal)", "Team (Shared/Collaborative)"])
+            .default(0)
+            .interact()?
+    };
 
     let (mode, notifications, team_settings) = if mode_index == 1 {
         let provider_index = Select::new()
             .with_prompt("Notification Provider")
-            .items([
-                "Slack",
-                "Discord",
-                "Generic Webhook",
-                "Custom Command",
-            ])
+            .items(["Slack", "Discord", "Generic Webhook", "Custom Command"])
             .default(0)
             .interact()?;
 
@@ -295,7 +485,7 @@ fn run_init() -> Result<(), Box<dyn Error>> {
 
         let track_log = Confirm::new()
             .with_prompt("Track .fence/decisions in Git?")
-            .default(false)
+            .default(true)
             .interact()?;
         let track_md = Confirm::new()
             .with_prompt("Track DECISIONS.md in Git?")
@@ -347,6 +537,43 @@ fn run_init() -> Result<(), Box<dyn Error>> {
 
     println!("🛡️ Fence initialized! Your intent is now trackable.");
     println!("Run fence log 'your message' to start.");
+
+    Ok(())
+}
+
+fn run_init_noninteractive(options: InitOptions) -> Result<(), Box<dyn Error>> {
+    let project_name = sanitize_project_name(&default_project_name());
+    let mode = if options.team {
+        FenceMode::Team
+    } else {
+        FenceMode::Solo
+    };
+    let team_settings = (mode == FenceMode::Team).then_some(TeamSettings { jira_domain: None });
+    let mut config = FenceConfig::new(project_name, mode, None, team_settings);
+    config.monitored_paths = fence::default_monitored_paths();
+    config.scoring = default_scoring_for_stack(fence::detect_stack().as_deref());
+    config.ignored_paths = fence::default_ignored_paths();
+
+    ensure_decisions_dir()?;
+    if has_git_directory() {
+        config.standalone_mode = false;
+        config.safe_sync = true;
+        remove_ignore_entry(Path::new(".gitignore"), ".fence/decisions")?;
+        remove_ignore_entry(Path::new(".gitignore"), "DECISIONS.md")?;
+    } else {
+        config.standalone_mode = true;
+        config.safe_sync = false;
+        config.sync_disclaimer =
+            Some("Standalone mode: sync integrity is not guaranteed without Git.".to_string());
+    }
+
+    fence::write_config(&config_path(), &config)?;
+    fence::export_markdown()?;
+
+    println!("Fence initialized non-interactively.");
+    println!("Mode: {:?}", config.mode);
+    println!("Monitored paths: {}", display_list(&config.monitored_paths));
+    println!("Run `fence log \"your decision\"` to start.");
 
     Ok(())
 }
@@ -441,10 +668,86 @@ fn run_amend() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_edit(id: &str) -> Result<(), Box<dyn Error>> {
+    let Some(entry) = fence::find_decision_file(id)? else {
+        println!("Decision not found or ID prefix is ambiguous: {id}");
+        process::exit(1);
+    };
+    let original = entry.decision;
+
+    let title: String = Input::new()
+        .with_prompt("Title")
+        .allow_empty(true)
+        .default(original.title.clone().unwrap_or_default())
+        .interact_text()?;
+    let message: String = Input::new()
+        .with_prompt("Decision message")
+        .default(original.message.clone())
+        .interact_text()?;
+    let rationale: String = Input::new()
+        .with_prompt("Rationale")
+        .allow_empty(true)
+        .default(original.rationale.clone().unwrap_or_default())
+        .interact_text()?;
+    let consequences: String = Input::new()
+        .with_prompt("Consequences")
+        .allow_empty(true)
+        .default(original.consequences.clone().unwrap_or_default())
+        .interact_text()?;
+    let category_choice = Select::new()
+        .with_prompt("Category")
+        .items(category_options())
+        .default(category_index(original.category))
+        .interact()?;
+    let tags_input: String = Input::new()
+        .with_prompt("Tags (comma-separated)")
+        .allow_empty(true)
+        .default(original.optional_tags.join(","))
+        .interact_text()?;
+    let links_input: String = Input::new()
+        .with_prompt("Links (comma-separated)")
+        .allow_empty(true)
+        .default(original.links.join(","))
+        .interact_text()?;
+    let owner: String = Input::new()
+        .with_prompt("Owner")
+        .allow_empty(true)
+        .default(original.owner.clone().unwrap_or_default())
+        .interact_text()?;
+    let reviewer: String = Input::new()
+        .with_prompt("Reviewer")
+        .allow_empty(true)
+        .default(original.reviewer.clone().unwrap_or_default())
+        .interact_text()?;
+    let review_due: String = Input::new()
+        .with_prompt("Review due")
+        .allow_empty(true)
+        .default(original.review_due.clone())
+        .interact_text()?;
+
+    let edited = fence::update_decision(id, |decision| {
+        decision.title = optional_value(title);
+        decision.message = message;
+        decision.rationale = optional_value(rationale);
+        decision.consequences = optional_value(consequences);
+        decision.category = category_from_index(category_choice);
+        decision.optional_tags = parse_tags(Some(tags_input));
+        decision.links = parse_tags(Some(links_input));
+        decision.owner = optional_value(owner);
+        decision.reviewer = optional_value(reviewer);
+        decision.review_due = fence::normalize_review_due(Some(&review_due))?;
+        Ok(())
+    })?;
+
+    if let Some(decision) = edited {
+        println!("Decision {} updated.", decision.id);
+    }
+
+    Ok(())
+}
+
 fn parse_category(value: Option<String>) -> fence::DecisionCategory {
-    let normalized = value
-        .unwrap_or_else(|| "gen".to_string())
-        .to_lowercase();
+    let normalized = value.unwrap_or_else(|| "gen".to_string()).to_lowercase();
 
     match normalized.as_str() {
         "arch" | "architecture" => fence::DecisionCategory::Architecture,
@@ -486,7 +789,6 @@ fn default_scoring_for_stack(stack: Option<&str>) -> HashMap<String, u32> {
     scoring
 }
 
-
 fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
     match platform {
         "GitHub" => {
@@ -513,202 +815,301 @@ fn maybe_write_ci_template(platform: &str) -> Result<(), Box<dyn Error>> {
                     return Ok(());
                 }
             }
-            fence::write_gitlab_ci(&path)?;
+            fence::write_gitlab_ci(path)?;
         }
         _ => {}
     }
     Ok(())
 }
 
-fn run_browse() -> Result<(), Box<dyn Error>> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+fn run_sentinel_init() -> Result<(), Box<dyn Error>> {
+    if !has_git_directory() {
+        println!("The Sentinel requires a Git repository. Please run git init first.");
+        process::exit(1);
+    }
 
-    let result = browse_loop(&mut terminal);
+    let detected_platform = git_remote_platform().unwrap_or_else(|| "GitHub".to_string());
+    let platform = if detected_platform == "GitLab" {
+        "GitLab".to_string()
+    } else {
+        "GitHub".to_string()
+    };
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    let mut config = if config_path().exists() {
+        fence::load_runtime_config()
+    } else {
+        FenceConfig::new(default_project_name(), FenceMode::Solo, None, None)
+    };
 
-    result
+    if config.monitored_paths.is_empty() {
+        config.monitored_paths = fence::default_monitored_paths();
+    }
+    if config.scoring.is_empty() {
+        config.scoring = default_scoring_for_stack(fence::detect_stack().as_deref());
+    }
+    config.sentinel_enabled = true;
+    config.sentinel_platform = Some(platform.clone());
+
+    ensure_decisions_dir()?;
+    maybe_write_ci_template(&platform)?;
+    fence::write_config(&config_path(), &config)?;
+
+    println!("Sentinel enabled for {platform}.");
+    println!("Monitored paths: {}", display_list(&config.monitored_paths));
+    println!("Run `fence sentinel check` to test it locally.");
+
+    Ok(())
 }
 
-fn browse_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), Box<dyn Error>> {
-    let entries = fence::read_log_entries()?;
-    let mut list_state = ListState::default();
-    if !entries.is_empty() {
-        list_state.select(Some(0));
+fn run_doctor() -> Result<(), Box<dyn Error>> {
+    let mut issues = 0usize;
+    let config_exists = config_path().exists();
+    print_check(
+        "Config",
+        config_exists,
+        "fence.toml found",
+        "run `fence init`",
+    );
+    if !config_exists {
+        issues += 1;
     }
-    let mut detail_focus = false;
-    let mut hide_superseded = false;
-    let log_status = fence::tracking_status_for_log();
-    let md_status = fence::tracking_status_for_markdown();
 
-    loop {
-        let visible = visible_indices(&entries, hide_superseded);
-        clamp_selection(&visible, &mut list_state);
-        terminal.draw(|frame| {
-            draw_browse_ui(
-                frame,
-                &entries,
-                &visible,
-                &mut list_state,
-                detail_focus,
-                hide_superseded,
-                log_status,
-                md_status,
-            )
-        })?;
+    let git_present = has_git_directory();
+    print_check("Git", git_present, ".git directory found", "run `git init`");
+    if !git_present {
+        issues += 1;
+    }
 
-        if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        move_selection(1, visible.len(), &mut list_state);
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        move_selection(-1, visible.len(), &mut list_state);
-                    }
-                    KeyCode::Enter => {
-                        detail_focus = !detail_focus;
-                    }
-                    KeyCode::Char('h') => {
-                        hide_superseded = !hide_superseded;
-                    }
-                    KeyCode::Char('r') => {
-                        jump_to_replacement(&entries, &visible, &mut list_state);
-                    }
-                    _ => {}
+    let decision_count = fence::log_entry_count()?;
+    let legacy_exists = Path::new("decisions.log").exists();
+    let legacy_needs_migration = legacy_exists && decision_count == 0;
+    print_check(
+        "Decision Store",
+        !legacy_needs_migration,
+        &format!("{decision_count} structured decisions"),
+        "legacy decisions.log exists; run `fence migrate`",
+    );
+    if legacy_needs_migration {
+        issues += 1;
+    }
+
+    let sync = fence::sync_status()?;
+    print_check(
+        "Markdown Export",
+        sync.in_sync,
+        "DECISIONS.md is in sync",
+        &format!(
+            "DECISIONS.md has {} rows; Fence has {} decisions. Run `fence export`",
+            sync.markdown_count, sync.decision_count
+        ),
+    );
+    if !sync.in_sync {
+        issues += 1;
+    }
+
+    let (tracking_ok, log_status, md_status) = fence::check_tracking_integrity()?;
+    print_check(
+        "Git Tracking",
+        tracking_ok,
+        &format!(
+            ".fence/decisions={} DECISIONS.md={}",
+            tracking_label(log_status),
+            tracking_label(md_status)
+        ),
+        "tracked decision files have unstaged changes",
+    );
+    if !tracking_ok {
+        issues += 1;
+    }
+
+    let hook_path = git_hooks_path().join("pre-commit");
+    print_optional(
+        "Pre-commit Hook",
+        hook_path.exists(),
+        "pre-commit hook installed",
+        "optional: run `fence init` and enable the hook",
+    );
+
+    if issues > 0 {
+        println!("\nFence doctor found {issues} issue(s).");
+        process::exit(1);
+    }
+
+    println!("\nFence doctor found no launch-blocking issues.");
+    Ok(())
+}
+
+fn run_serve(host: IpAddr, port: u16, open_browser: bool) -> Result<(), Box<dyn Error>> {
+    let bind_host = if host.is_unspecified() {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        host
+    };
+    let listener = TcpListener::bind(SocketAddr::new(bind_host, port))?;
+    let address = listener.local_addr()?;
+    let url = format!("http://{address}");
+
+    println!("Fence UI running at {url}");
+    println!("Press Ctrl+C to stop.");
+    if open_browser {
+        open_url(&url);
+    }
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                if let Err(err) = handle_http_request(stream) {
+                    eprintln!("Request failed: {err}");
                 }
             }
+            Err(err) => eprintln!("Connection failed: {err}"),
         }
     }
 
     Ok(())
 }
 
-fn draw_browse_ui(
-    frame: &mut Frame,
-    entries: &[fence::Decision],
-    visible: &[usize],
-    list_state: &mut ListState,
-    detail_focus: bool,
-    hide_superseded: bool,
-    log_status: fence::TrackingStatus,
-    md_status: fence::TrackingStatus,
-) {
-    let area = frame.area();
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let command = ("open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let command = ("cmd", vec!["/C", "start", url]);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let command = ("xdg-open", vec![url]);
 
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(if detail_focus {
-            [Constraint::Percentage(25), Constraint::Percentage(75)]
-        } else {
-            [Constraint::Percentage(40), Constraint::Percentage(60)]
-        })
-        .split(layout[0]);
-
-    let list_block = Block::default().borders(Borders::ALL).title("Decisions");
-    let detail_block = Block::default().borders(Borders::ALL).title("Details");
-
-    if entries.is_empty() || visible.is_empty() {
-        let empty_message = Paragraph::new("No decisions yet. Run `fence log` to create one.")
-            .block(list_block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(empty_message, body[0]);
-
-        let detail_copy = if entries.is_empty() {
-            "Select a decision to view details.".to_string()
-        } else {
-            "No visible decisions. Press `h` to show superseded entries again.".to_string()
-        };
-        let detail_message = Paragraph::new(detail_copy)
-            .block(detail_block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(detail_message, body[1]);
-    } else {
-        let items: Vec<ListItem> = visible
-            .iter()
-            .map(|index| {
-                let entry = &entries[*index];
-                let status_style = status_style(entry);
-                let indicator = status_indicator(entry);
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{indicator} "),
-                        status_style.add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{} ", entry_date(entry)),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(entry_title(entry), status_style),
-                ]))
-            })
-            .collect();
-        let list = List::new(items)
-            .block(list_block)
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-        frame.render_stateful_widget(list, body[0], list_state);
-
-        let detail_message = Paragraph::new(detail_text(entries, visible, list_state))
-            .block(detail_block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(detail_message, body[1]);
-    }
-
-    let help = Paragraph::new(format!(
-        "q: quit  j/k: navigate  enter: toggle detail  h: hide superseded ({})  r: open replacement  [Log: {}] [MD: {}]",
-        if hide_superseded { "on" } else { "off" },
-        tracking_label(log_status),
-        tracking_label(md_status)
-    ))
-        .style(Style::default().fg(Color::Gray))
-        .alignment(Alignment::Center);
-    frame.render_widget(help, layout[1]);
+    let _ = ProcessCommand::new(command.0).args(command.1).spawn();
 }
 
-fn entry_date(entry: &fence::Decision) -> &str {
-    entry
-        .timestamp
+fn handle_http_request(mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line)?;
+    let path = request_line
         .split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .split('?')
         .next()
-        .unwrap_or(&entry.timestamp)
+        .unwrap_or("/");
+
+    let (status, content_type, body) = match path {
+        "/" | "/index.html" => (
+            "HTTP/1.1 200 OK",
+            "text/html; charset=utf-8",
+            fence::render_site_html()?,
+        ),
+        "/api/decisions" => (
+            "HTTP/1.1 200 OK",
+            "application/json; charset=utf-8",
+            serde_json::to_string(&fence::read_log_entries()?)?,
+        ),
+        "/api/stats" => (
+            "HTTP/1.1 200 OK",
+            "application/json; charset=utf-8",
+            serde_json::to_string(&fence::decision_status_counts()?)?,
+        ),
+        "/health" => (
+            "HTTP/1.1 200 OK",
+            "application/json; charset=utf-8",
+            "{\"status\":\"ok\"}".to_string(),
+        ),
+        _ => (
+            "HTTP/1.1 404 Not Found",
+            "text/plain; charset=utf-8",
+            "Not found".to_string(),
+        ),
+    };
+
+    let response = format!(
+        "{status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes())?;
+    stream.flush()?;
+
+    Ok(())
 }
 
-fn entry_title(entry: &fence::Decision) -> String {
-    let title = entry.message.lines().next().unwrap_or("").trim();
-    let mut clipped = String::new();
-    let mut count = 0;
-    for ch in title.chars() {
-        if count >= 40 {
-            clipped.push_str("...");
-            break;
-        }
-        clipped.push(ch);
-        count += 1;
-    }
-    if clipped.is_empty() {
-        "<untitled>".to_string()
-    } else {
-        clipped
-    }
+fn print_json<T: Serialize>(value: &T) -> Result<(), Box<dyn Error>> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }
 
-fn visible_indices(entries: &[fence::Decision], hide_superseded: bool) -> Vec<usize> {
-    entries
+fn print_sentinel_report(result: &fence::SentinelCheckResult) {
+    if result.bypassed {
+        println!("✅ Sentinel bypassed for latest commit.");
+        return;
+    }
+
+    let relevant = result
+        .files
         .iter()
-        .enumerate()
-        .filter(|(_, entry)| !hide_superseded || entry.status != fence::DecisionStatus::Superseded)
-        .map(|(index, _)| index)
-        .collect()
+        .filter(|file| !file.ignored && (file.monitored || file.points > 0))
+        .collect::<Vec<_>>();
+
+    if relevant.is_empty() {
+        println!("✅ No monitored changes detected.");
+        return;
+    }
+
+    println!("Changed architectural files:");
+    for file in relevant {
+        if file.points > 0 {
+            if file.deletions > 0 {
+                println!(
+                    "- {} (+{}, -{}, score {})",
+                    file.path, file.additions, file.deletions, file.points
+                );
+            } else {
+                println!(
+                    "- {} (+{}, score {})",
+                    file.path, file.additions, file.points
+                );
+            }
+        } else if file.deletions > 0 {
+            println!("- {} (+{}, -{})", file.path, file.additions, file.deletions);
+        } else {
+            println!("- {} (+{})", file.path, file.additions);
+        }
+    }
+    println!();
+    println!("Required score: >{}", result.threshold);
+    println!("Current score: {}", result.score);
+
+    if !result.requires_decision {
+        println!("Decision: not required");
+    } else if result.decision_found {
+        println!("Decision: found");
+    } else {
+        println!("Missing: .fence/decisions change");
+    }
+}
+
+fn print_config_validation(report: &fence::ConfigValidationReport) {
+    if report.valid {
+        println!("Config validation: ok");
+    } else {
+        println!("Config validation: failed");
+    }
+
+    for error in &report.errors {
+        println!("Error: {error}");
+    }
+    for warning in &report.warnings {
+        println!("Warning: {warning}");
+    }
+}
+
+fn print_check(label: &str, ok: bool, success: &str, failure: &str) {
+    let status = if ok { "ok" } else { "fix" };
+    let message = if ok { success } else { failure };
+    println!("{label}: {status} - {message}");
+}
+
+fn print_optional(label: &str, ok: bool, success: &str, fallback: &str) {
+    let status = if ok { "ok" } else { "optional" };
+    let message = if ok { success } else { fallback };
+    println!("{label}: {status} - {message}");
 }
 
 fn tracking_label(status: fence::TrackingStatus) -> &'static str {
@@ -718,141 +1119,22 @@ fn tracking_label(status: fence::TrackingStatus) -> &'static str {
     }
 }
 
-fn clamp_selection(visible: &[usize], list_state: &mut ListState) {
-    if visible.is_empty() {
-        list_state.select(None);
-        return;
-    }
-
-    let current = list_state.selected().unwrap_or(0);
-    let clamped = current.min(visible.len().saturating_sub(1));
-    list_state.select(Some(clamped));
-}
-
-fn move_selection(delta: isize, visible_len: usize, list_state: &mut ListState) {
-    if visible_len == 0 {
-        list_state.select(None);
-        return;
-    }
-
-    let current = list_state.selected().unwrap_or(0) as isize;
-    let next = (current + delta).clamp(0, visible_len.saturating_sub(1) as isize);
-    list_state.select(Some(next as usize));
-}
-
-fn jump_to_replacement(entries: &[fence::Decision], visible: &[usize], list_state: &mut ListState) {
-    let Some(selected) = list_state.selected() else {
-        return;
-    };
-    let Some(entry_index) = visible.get(selected) else {
-        return;
-    };
-    let Some(replacement_id) = entries
-        .get(*entry_index)
-        .and_then(|entry| entry.superseded_by.as_deref())
-    else {
-        return;
-    };
-
-    if let Some(next_visible_index) = visible.iter().position(|index| {
-        entries
-            .get(*index)
-            .map(|entry| entry.id == replacement_id)
-            .unwrap_or(false)
-    }) {
-        list_state.select(Some(next_visible_index));
-    }
-}
-
-fn detail_text(entries: &[fence::Decision], visible: &[usize], list_state: &ListState) -> String {
-    let Some(index) = list_state.selected() else {
-        return "Select a decision to view details.".to_string();
-    };
-    let Some(entry_index) = visible.get(index) else {
-        return "Select a decision to view details.".to_string();
-    };
-    let Some(entry) = entries.get(*entry_index) else {
-        return "Select a decision to view details.".to_string();
-    };
-
-    let tags = if entry.optional_tags.is_empty() {
-        "Tags: -".to_string()
+fn display_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
     } else {
-        format!("Tags: {}", entry.optional_tags.join(", "))
-    };
-
-    let review = format!("Review Due: {}", entry.review_due);
-    let status = format!("Status: {}", status_label(entry));
-    let lifecycle_link = match entry.superseded_by.as_deref() {
-        Some(replacement_id) => format!("View Replacement: {replacement_id} (press r)"),
-        None => match entry.supersedes.as_deref() {
-            Some(previous_id) => format!("Supersedes: {previous_id}"),
-            None => "Lifecycle Link: -".to_string(),
-        },
-    };
-
-    format!(
-        "Category: {} {}\nAuthor: {}\nTimestamp: {}\n{}\n{}\n{}\n{}\n\n{}",
-        category_icon(entry.category),
-        category_label(entry.category),
-        entry.author,
-        entry.timestamp,
-        status,
-        review,
-        tags,
-        lifecycle_link,
-        entry.message
-    )
-}
-
-fn status_indicator(entry: &fence::Decision) -> &'static str {
-    match entry.status {
-        fence::DecisionStatus::Deprecated => "[✖]",
-        fence::DecisionStatus::Superseded => "[s]",
-        fence::DecisionStatus::Accepted if fence::is_stale(entry) => "[!]",
-        _ => "[●]",
-    }
-}
-
-fn status_label(entry: &fence::Decision) -> &'static str {
-    fence::decision_status_label(entry)
-}
-
-fn status_style(entry: &fence::Decision) -> Style {
-    match entry.status {
-        fence::DecisionStatus::Deprecated => Style::default().fg(Color::Red),
-        fence::DecisionStatus::Superseded => Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM),
-        fence::DecisionStatus::Accepted if fence::is_stale(entry) => {
-            Style::default().fg(Color::Yellow)
-        }
-        _ => Style::default().fg(Color::Green),
-    }
-}
-
-fn category_icon(category: fence::DecisionCategory) -> &'static str {
-    match category {
-        fence::DecisionCategory::Architecture => "🏛️",
-        fence::DecisionCategory::Technical => "⚙️",
-        fence::DecisionCategory::Product => "🎯",
-        fence::DecisionCategory::Security => "🛡️",
-        fence::DecisionCategory::General => "🏷️",
-    }
-}
-
-fn category_label(category: fence::DecisionCategory) -> &'static str {
-    match category {
-        fence::DecisionCategory::Architecture => "Architecture",
-        fence::DecisionCategory::Technical => "Technical",
-        fence::DecisionCategory::Product => "Product",
-        fence::DecisionCategory::Security => "Security",
-        fence::DecisionCategory::General => "General",
+        values.join(", ")
     }
 }
 
 fn category_options() -> [&'static str; 5] {
-    ["Architecture", "Technical", "Product", "Security", "General"]
+    [
+        "Architecture",
+        "Technical",
+        "Product",
+        "Security",
+        "General",
+    ]
 }
 
 fn category_index(category: fence::DecisionCategory) -> usize {

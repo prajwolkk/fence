@@ -1,4 +1,4 @@
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
@@ -6,18 +6,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use chrono::{DateTime, Duration as ChronoDuration, Local};
+use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate};
+use globset::Glob;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const CONFIG_FILE_NAME: &str = "fence.toml";
-const DEFAULT_LOG_PATH: &str = "decisions.log";
+const DEFAULT_LOG_PATH: &str = ".fence/decisions";
 const DECISION_DIR: &str = ".fence/decisions";
 const DEFAULT_DECISIONS_MD_PATH: &str = "DECISIONS.md";
 const DECISIONS_MD_HEADER: &str = "# 🛡️ Architectural Decision Records\n\n| Date | Author | Decision | Status |\n| :--- | :--- | :--- | :--- |\n";
 const PRE_COMMIT_SNIPPET: &str = "#!/bin/sh\nif ! fence check; then\n  echo \"Fence: Commit blocked. Log or documentation is out of sync.\"\n  echo \"Run 'fence export' and stage the updated files.\"\n  exit 1\nfi\n";
 const SITE_TEMPLATE: &str = include_str!("site_template.html");
-const GITHUB_WORKFLOW_TEMPLATE: &str = "name: Fence Sentinel\n\non:\n  pull_request:\n  push:\n    branches: [main, master]\n\njobs:\n  fence:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions-rs/toolchain@v1\n        with:\n          toolchain: stable\n          override: true\n      - name: Fence Sentinel Check\n        run: |\n          cargo run -- sentinel check --base origin/main || cargo run -- sentinel check --base origin/master\n";
+const GITHUB_WORKFLOW_TEMPLATE: &str = "name: Fence Sentinel\n\non:\n  pull_request:\n  push:\n    branches: [main, master]\n\njobs:\n  fence:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n      - name: Install Fence\n        run: |\n          curl -fsSL https://github.com/prajwolkk/fence/releases/latest/download/fence-x86_64-unknown-linux-gnu.tar.gz | tar -xz\n          sudo mv fence /usr/local/bin/fence\n          fence --version\n      - name: Fence Sentinel Check\n        run: fence sentinel check --base origin/main || fence sentinel check --base origin/master\n";
 const GITLAB_CI_TEMPLATE: &str = "stages:\n  - fence\n\nfence_sentinel:\n  stage: fence\n  image: rust:latest\n  script:\n    - cargo run -- sentinel check --base origin/main || cargo run -- sentinel check --base origin/master\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub struct FenceConfig {
     pub auto_export: bool,
     #[serde(default)]
     pub monitored_paths: Vec<String>,
+    #[serde(default = "default_ignored_paths")]
+    pub ignored_paths: Vec<String>,
     #[serde(default)]
     pub standalone_mode: bool,
     #[serde(default)]
@@ -108,6 +111,25 @@ fn default_review_due() -> String {
     (Local::now() + ChronoDuration::days(365)).to_rfc3339()
 }
 
+pub fn normalize_review_due(value: Option<&str>) -> Result<String, io::Error> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(default_review_due());
+    };
+
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
+        return Ok(parsed.to_rfc3339());
+    }
+
+    if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        return Ok(format!("{date}T00:00:00+00:00"));
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "review due date must be YYYY-MM-DD or RFC3339",
+    ))
+}
+
 fn default_threshold() -> u32 {
     10
 }
@@ -138,16 +160,11 @@ fn get_branch_name() -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum EnforcementLevel {
     Warning,
+    #[default]
     Blocking,
-}
-
-impl Default for EnforcementLevel {
-    fn default() -> Self {
-        EnforcementLevel::Blocking
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +206,49 @@ pub struct Decision {
     pub supersedes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequences: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecisionRecordOptions {
+    pub category: DecisionCategory,
+    pub optional_tags: Vec<String>,
+    pub replaces: Option<String>,
+    pub review_due: Option<String>,
+    pub title: Option<String>,
+    pub rationale: Option<String>,
+    pub consequences: Option<String>,
+    pub links: Vec<String>,
+    pub owner: Option<String>,
+    pub reviewer: Option<String>,
+}
+
+impl Default for DecisionRecordOptions {
+    fn default() -> Self {
+        Self {
+            category: DecisionCategory::General,
+            optional_tags: Vec::new(),
+            replaces: None,
+            review_due: None,
+            title: None,
+            rationale: None,
+            consequences: None,
+            links: Vec::new(),
+            owner: None,
+            reviewer: None,
+        }
+    }
 }
 
 impl FenceConfig {
@@ -204,6 +264,7 @@ impl FenceConfig {
             log_path: default_log_path(),
             auto_export: default_auto_export(),
             monitored_paths: Vec::new(),
+            ignored_paths: default_ignored_paths(),
             standalone_mode: false,
             safe_sync: false,
             sync_disclaimer: None,
@@ -259,7 +320,7 @@ impl FenceManager {
         category: DecisionCategory,
         optional_tags: Vec<String>,
     ) -> Result<(), io::Error> {
-        Self::record_with_options(message, category, optional_tags, None)
+        Self::record_with_options(message, category, optional_tags, None).map(|_| ())
     }
 
     pub fn record_with_options(
@@ -267,35 +328,57 @@ impl FenceManager {
         category: DecisionCategory,
         optional_tags: Vec<String>,
         replaces: Option<String>,
-    ) -> Result<(), io::Error> {
-        if let Some(ref old_id) = replaces {
-            if find_decision_file(old_id)?.is_none() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Decision not found: {old_id}"),
-                ));
-            }
+    ) -> Result<Decision, io::Error> {
+        Self::record_with_details(
+            message,
+            DecisionRecordOptions {
+                category,
+                optional_tags,
+                replaces,
+                ..DecisionRecordOptions::default()
+            },
+        )
+    }
+
+    pub fn record_with_details(
+        message: &str,
+        options: DecisionRecordOptions,
+    ) -> Result<Decision, io::Error> {
+        if let Some(ref old_id) = options.replaces
+            && find_decision_file(old_id)?.is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Decision not found: {old_id}"),
+            ));
         }
 
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let author = Self::get_author();
         let branch = get_branch_name();
         let id = short_hash(&format!("{timestamp}{author}{branch}{message}"));
+        let review_due = normalize_review_due(options.review_due.as_deref())?;
         let entry = Decision {
             id,
             author,
             timestamp,
             branch,
             message: message.to_string(),
-            category,
-            optional_tags,
+            category: options.category,
+            optional_tags: options.optional_tags,
             status: DecisionStatus::Accepted,
-            review_due: default_review_due(),
-            supersedes: replaces.clone(),
+            review_due,
+            supersedes: options.replaces.clone(),
             superseded_by: None,
+            title: options.title,
+            rationale: options.rationale,
+            consequences: options.consequences,
+            links: options.links,
+            owner: options.owner,
+            reviewer: options.reviewer,
         };
         write_decision_file(&entry)?;
-        if let Some(old_id) = replaces {
+        if let Some(old_id) = options.replaces {
             let _ = supersede_decision(&old_id, &entry.id)?;
         }
 
@@ -306,7 +389,7 @@ impl FenceManager {
 
         dispatch_notifications(&config, &entry);
 
-        Ok(())
+        Ok(entry)
     }
 
     pub fn list() -> String {
@@ -314,7 +397,7 @@ impl FenceManager {
             Ok(entries) if entries.is_empty() => "No log file found.".to_string(),
             Ok(entries) => entries
                 .into_iter()
-                .map(|entry| format!("[{}] ({}) {}", entry.timestamp, entry.author, entry.message))
+                .map(|entry| decision_summary_line(&entry))
                 .collect::<Vec<_>>()
                 .join("\n"),
             Err(_) => "No log file found.".to_string(),
@@ -330,8 +413,20 @@ impl FenceManager {
                 decision.message.to_lowercase().contains(&term)
                     || decision.author.to_lowercase().contains(&term)
                     || decision.id.to_lowercase().contains(&term)
+                    || decision
+                        .title
+                        .as_deref()
+                        .is_some_and(|title| title.to_lowercase().contains(&term))
+                    || decision
+                        .rationale
+                        .as_deref()
+                        .is_some_and(|rationale| rationale.to_lowercase().contains(&term))
+                    || decision
+                        .optional_tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains(&term))
             })
-            .map(|decision| format!("[{}] ({}) {}", decision.timestamp, decision.author, decision.message))
+            .map(|decision| decision_summary_line(&decision))
             .collect()
     }
 }
@@ -347,6 +442,7 @@ pub fn load_runtime_config() -> FenceConfig {
         log_path: default_log_path(),
         auto_export: default_auto_export(),
         monitored_paths: Vec::new(),
+        ignored_paths: default_ignored_paths(),
         standalone_mode: false,
         safe_sync: false,
         sync_disclaimer: None,
@@ -371,7 +467,10 @@ pub fn write_config(path: &Path, config: &FenceConfig) -> Result<(), io::Error> 
 }
 
 pub fn ensure_log_file(path: &Path) -> Result<(), io::Error> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
 
@@ -420,7 +519,10 @@ pub fn append_markdown_row(path: &Path, entry: &Decision) -> Result<(), io::Erro
 }
 
 pub fn ensure_markdown_header(path: &Path) -> Result<(), io::Error> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
 
@@ -433,6 +535,73 @@ pub fn ensure_markdown_header(path: &Path) -> Result<(), io::Error> {
 
 pub fn escape_markdown_cell(value: &str) -> String {
     value.replace('|', "\\|")
+}
+
+pub fn decision_category_label(category: DecisionCategory) -> &'static str {
+    match category {
+        DecisionCategory::Architecture => "Architecture",
+        DecisionCategory::Technical => "Technical",
+        DecisionCategory::Product => "Product",
+        DecisionCategory::Security => "Security",
+        DecisionCategory::General => "General",
+    }
+}
+
+pub fn decision_summary_line(decision: &Decision) -> String {
+    format!(
+        "{}  [{}] {}  {}  ({}) {}",
+        decision.id,
+        decision_category_label(decision.category),
+        decision_status_label(decision),
+        decision.timestamp,
+        decision.author,
+        decision.message
+    )
+}
+
+pub fn decision_detail(decision: &Decision) -> String {
+    let tags = if decision.optional_tags.is_empty() {
+        "-".to_string()
+    } else {
+        decision.optional_tags.join(", ")
+    };
+    let supersedes = decision.supersedes.as_deref().unwrap_or("-");
+    let superseded_by = decision.superseded_by.as_deref().unwrap_or("-");
+    let title = decision.title.as_deref().unwrap_or("-");
+    let rationale = decision.rationale.as_deref().unwrap_or("-");
+    let consequences = decision.consequences.as_deref().unwrap_or("-");
+    let links = if decision.links.is_empty() {
+        "-".to_string()
+    } else {
+        decision.links.join(", ")
+    };
+    let owner = decision.owner.as_deref().unwrap_or("-");
+    let reviewer = decision.reviewer.as_deref().unwrap_or("-");
+
+    format!(
+        "ID: {}\nTitle: {}\nStatus: {}\nCategory: {}\nAuthor: {}\nOwner: {}\nReviewer: {}\nBranch: {}\nTimestamp: {}\nReview Due: {}\nTags: {}\nLinks: {}\nSupersedes: {}\nSuperseded By: {}\n\n{}\n\nRationale: {}\nConsequences: {}",
+        decision.id,
+        title,
+        decision_status_label(decision),
+        decision_category_label(decision.category),
+        decision.author,
+        owner,
+        reviewer,
+        if decision.branch.is_empty() {
+            "-"
+        } else {
+            &decision.branch
+        },
+        decision.timestamp,
+        decision.review_due,
+        tags,
+        links,
+        supersedes,
+        superseded_by,
+        decision.message,
+        rationale,
+        consequences
+    )
 }
 
 pub fn export_markdown() -> Result<(), io::Error> {
@@ -470,12 +639,18 @@ pub fn parse_log_line(line: &str) -> Option<Decision> {
         return None;
     }
 
-    let close_bracket = trimmed.find("] (")?;
+    let close_bracket = trimmed.find(']')?;
     let timestamp = trimmed.get(1..close_bracket)?.to_string();
-    let remainder = trimmed.get(close_bracket + 3..)?;
-    let close_paren = remainder.find(") ")?;
-    let author = remainder.get(0..close_paren)?.to_string();
-    let message = remainder.get(close_paren + 2..)?.to_string();
+    let remainder = trimmed.get(close_bracket + 1..)?.trim();
+    let (author, message) = if let Some(rest) = remainder.strip_prefix('(') {
+        let close_paren = rest.find(") ")?;
+        (
+            rest.get(0..close_paren)?.to_string(),
+            rest.get(close_paren + 2..)?.to_string(),
+        )
+    } else {
+        (fallback_system_author(), remainder.to_string())
+    };
 
     Some(Decision {
         id: short_hash(&format!("{timestamp}{author}{message}")),
@@ -488,7 +663,14 @@ pub fn parse_log_line(line: &str) -> Option<Decision> {
         status: DecisionStatus::Accepted,
         review_due: default_review_due(),
         supersedes: None,
+
         superseded_by: None,
+        title: None,
+        rationale: None,
+        consequences: None,
+        links: Vec::new(),
+        owner: None,
+        reviewer: None,
     })
 }
 
@@ -534,10 +716,20 @@ pub fn read_log_entries() -> Result<Vec<Decision>, io::Error> {
     read_decision_entries()
 }
 
-pub fn generate_site() -> Result<PathBuf, io::Error> {
+pub fn render_site_html() -> Result<String, io::Error> {
     let entries = read_log_entries()?;
-    let data = serde_json::to_string(&entries).map_err(io::Error::other)?;
-    let html = SITE_TEMPLATE.replace("__FENCE_DATA__", &data);
+    render_site_html_for_entries(&entries)
+}
+
+pub fn render_site_html_for_entries(entries: &[Decision]) -> Result<String, io::Error> {
+    let data = serde_json::to_string(entries)
+        .map_err(io::Error::other)?
+        .replace("</", "<\\/");
+    Ok(SITE_TEMPLATE.replace("__FENCE_DATA__", &data))
+}
+
+pub fn generate_site() -> Result<PathBuf, io::Error> {
+    let html = render_site_html()?;
 
     let output_dir = Path::new("fence-site");
     fs::create_dir_all(output_dir)?;
@@ -606,9 +798,52 @@ pub fn read_decision_entries() -> Result<Vec<Decision>, io::Error> {
 }
 
 pub fn find_decision_file(id: &str) -> Result<Option<DecisionFile>, io::Error> {
-    Ok(read_decision_files()?
+    let trimmed = id.trim();
+    let entries = read_decision_files()?;
+    if let Some(exact) = entries.iter().find(|entry| entry.decision.id == trimmed) {
+        return Ok(Some(DecisionFile {
+            path: exact.path.clone(),
+            decision: exact.decision.clone(),
+        }));
+    }
+
+    let mut prefix_matches = entries
         .into_iter()
-        .find(|entry| entry.decision.id == id))
+        .filter(|entry| entry.decision.id.starts_with(trimmed));
+    let first = prefix_matches.next();
+    if first.is_some() && prefix_matches.next().is_none() {
+        Ok(first)
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn update_decision<F>(id: &str, updater: F) -> Result<Option<Decision>, io::Error>
+where
+    F: FnOnce(&mut Decision) -> Result<(), io::Error>,
+{
+    let Some(mut entry) = find_decision_file(id)? else {
+        return Ok(None);
+    };
+
+    updater(&mut entry.decision)?;
+    write_decision_at_path(&entry.path, &entry.decision)?;
+    export_markdown()?;
+    Ok(Some(entry.decision))
+}
+
+pub fn review_decision(id: &str, review_due: Option<&str>) -> Result<Option<Decision>, io::Error> {
+    update_decision(id, |decision| {
+        decision.review_due = normalize_review_due(review_due)?;
+        Ok(())
+    })
+}
+
+pub fn stale_decisions() -> Result<Vec<Decision>, io::Error> {
+    Ok(read_decision_entries()?
+        .into_iter()
+        .filter(is_stale)
+        .collect())
 }
 
 pub fn deprecate_decision(id: &str) -> Result<bool, io::Error> {
@@ -651,10 +886,63 @@ pub fn decision_status_label(decision: &Decision) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
 pub struct DecisionHealthStats {
     pub healthy: usize,
     pub unhealthy: usize,
     pub ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionStatusCounts {
+    pub total: usize,
+    pub healthy: usize,
+    pub needs_attention: usize,
+    pub accepted: usize,
+    pub proposed: usize,
+    pub stale: usize,
+    pub deprecated: usize,
+    pub superseded: usize,
+}
+
+pub fn decision_status_counts() -> Result<DecisionStatusCounts, io::Error> {
+    let entries = read_decision_entries()?;
+    let mut counts = DecisionStatusCounts {
+        total: entries.len(),
+        healthy: 0,
+        needs_attention: 0,
+        accepted: 0,
+        proposed: 0,
+        stale: 0,
+        deprecated: 0,
+        superseded: 0,
+    };
+
+    for decision in entries {
+        match decision.status {
+            DecisionStatus::Accepted if is_stale(&decision) => {
+                counts.stale += 1;
+                counts.needs_attention += 1;
+            }
+            DecisionStatus::Accepted => {
+                counts.accepted += 1;
+                counts.healthy += 1;
+            }
+            DecisionStatus::Proposed => {
+                counts.proposed += 1;
+                counts.needs_attention += 1;
+            }
+            DecisionStatus::Deprecated => {
+                counts.deprecated += 1;
+                counts.needs_attention += 1;
+            }
+            DecisionStatus::Superseded => {
+                counts.superseded += 1;
+            }
+        }
+    }
+
+    Ok(counts)
 }
 
 pub fn health_stats() -> Result<DecisionHealthStats, io::Error> {
@@ -724,11 +1012,26 @@ pub fn count_markdown_entries(path: &Path) -> Result<usize, io::Error> {
     Ok(count)
 }
 
-pub fn check_sync() -> Result<bool, io::Error> {
+pub struct SyncStatus {
+    pub in_sync: bool,
+    pub decision_count: usize,
+    pub markdown_count: usize,
+}
+
+pub fn sync_status() -> Result<SyncStatus, io::Error> {
     let config = load_runtime_config();
-    let log_count = count_log_entries(Path::new(&config.log_path))?;
+    let decision_count = count_log_entries(Path::new(&config.log_path))?;
     let markdown_count = count_markdown_entries(Path::new(DEFAULT_DECISIONS_MD_PATH))?;
-    Ok(log_count == markdown_count)
+
+    Ok(SyncStatus {
+        in_sync: decision_count == markdown_count,
+        decision_count,
+        markdown_count,
+    })
+}
+
+pub fn check_sync() -> Result<bool, io::Error> {
+    sync_status().map(|status| status.in_sync)
 }
 
 pub fn log_entry_count() -> Result<usize, io::Error> {
@@ -748,13 +1051,115 @@ pub fn dispatch_notifications(config: &FenceConfig, entry: &Decision) {
     }
 }
 
+pub struct MigrationReport {
+    pub scanned: usize,
+    pub migrated: usize,
+    pub skipped_existing: usize,
+    pub ignored: usize,
+}
+
+pub fn migrate_legacy_log(path: &Path, dry_run: bool) -> Result<MigrationReport, io::Error> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(MigrationReport {
+                scanned: 0,
+                migrated: 0,
+                skipped_existing: 0,
+                ignored: 0,
+            });
+        }
+        Err(err) => return Err(err),
+    };
+
+    let mut existing_ids = read_decision_entries()?
+        .into_iter()
+        .map(|decision| decision.id)
+        .collect::<Vec<_>>();
+
+    let mut report = MigrationReport {
+        scanned: 0,
+        migrated: 0,
+        skipped_existing: 0,
+        ignored: 0,
+    };
+
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        report.scanned += 1;
+
+        let decision =
+            parse_log_line(trimmed).or_else(|| legacy_plaintext_decision(trimmed, index));
+        let Some(decision) = decision else {
+            report.ignored += 1;
+            continue;
+        };
+
+        if existing_ids.iter().any(|id| id == &decision.id) {
+            report.skipped_existing += 1;
+            continue;
+        }
+
+        if !dry_run {
+            write_decision_file(&decision)?;
+            existing_ids.push(decision.id.clone());
+        }
+        report.migrated += 1;
+    }
+
+    if report.migrated > 0 && !dry_run {
+        export_markdown()?;
+    }
+
+    Ok(report)
+}
+
+fn legacy_plaintext_decision(line: &str, index: usize) -> Option<Decision> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let timestamp = Local::now()
+        .checked_add_signed(ChronoDuration::seconds(index as i64))
+        .unwrap_or_else(Local::now)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    let author = fallback_system_author();
+    let id = short_hash(&format!("legacy:{index}:{trimmed}"));
+
+    Some(Decision {
+        id,
+        timestamp,
+        author,
+        branch: String::new(),
+        message: trimmed.to_string(),
+        category: DecisionCategory::General,
+        optional_tags: Vec::new(),
+        status: DecisionStatus::Accepted,
+        review_due: default_review_due(),
+        supersedes: None,
+
+        superseded_by: None,
+        title: None,
+        rationale: None,
+        consequences: None,
+        links: Vec::new(),
+        owner: None,
+        reviewer: None,
+    })
+}
+
 fn git_is_tracked(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
-    let status = Command::new("git")
+    let output = Command::new("git")
         .args(["ls-files", "--error-unmatch", "--", &path_str])
-        .status();
+        .output();
 
-    matches!(status, Ok(status) if status.success())
+    matches!(output, Ok(output) if output.status.success())
 }
 
 fn git_working_matches_index(path: &Path) -> Result<bool, io::Error> {
@@ -789,7 +1194,11 @@ fn git_base_branch() -> Option<String> {
     ];
     for candidate in candidates {
         if git_ref_exists(candidate) {
-            return Some(candidate.replace("refs/remotes/origin/", "origin/").replace("refs/heads/", ""));
+            return Some(
+                candidate
+                    .replace("refs/remotes/origin/", "origin/")
+                    .replace("refs/heads/", ""),
+            );
         }
     }
     None
@@ -817,44 +1226,84 @@ fn git_diff_files(base: &str) -> Result<Vec<String>, io::Error> {
         .collect())
 }
 
+#[derive(Debug, Clone)]
+struct GitDiffStat {
+    path: String,
+    additions: u32,
+    deletions: u32,
+}
+
+fn git_diff_stats(base: &str) -> Result<Vec<GitDiffStat>, io::Error> {
+    let output = Command::new("git")
+        .args(["diff", "--numstat", &format!("{base}..HEAD")])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(git_diff_files(base)?
+            .into_iter()
+            .map(|path| GitDiffStat {
+                path,
+                additions: 0,
+                deletions: 0,
+            })
+            .collect());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let additions = parts.next()?.parse::<u32>().unwrap_or(0);
+            let deletions = parts.next()?.parse::<u32>().unwrap_or(0);
+            let path = parts.next()?.trim().to_string();
+            if path.is_empty() {
+                None
+            } else {
+                Some(GitDiffStat {
+                    path,
+                    additions,
+                    deletions,
+                })
+            }
+        })
+        .collect())
+}
+
 fn is_monitored_path(path: &str, monitored: &[String]) -> bool {
     monitored.iter().any(|entry| {
         if entry.is_empty() {
             return false;
         }
-        path == entry || path.starts_with(&format!("{entry}/"))
+        matches_pattern(path, entry)
     })
 }
 
-fn compute_weighted_score(diff_files: &[String], scoring: &HashMap<String, u32>) -> (u32, usize) {
-    if scoring.is_empty() {
-        return (0, 0);
-    }
+fn is_ignored_path(path: &str, ignored: &[String]) -> bool {
+    ignored
+        .iter()
+        .any(|entry| !entry.is_empty() && matches_pattern(path, entry))
+}
 
-    let mut total = 0;
-    let mut counted = 0;
-
-    for file in diff_files {
-        let mut best = 0;
-        for (pattern, points) in scoring {
-            if matches_pattern(file, pattern) {
-                best = best.max(*points);
-            }
-        }
-        if best > 0 {
-            total += best;
-            counted += 1;
-        }
-    }
-
-    (total, counted)
+fn weighted_score_for_file(path: &str, scoring: &HashMap<String, u32>) -> u32 {
+    scoring
+        .iter()
+        .filter_map(|(pattern, points)| matches_pattern(path, pattern).then_some(*points))
+        .max()
+        .unwrap_or(0)
 }
 
 fn matches_pattern(path: &str, pattern: &str) -> bool {
-    if pattern.contains('*') || pattern.contains('?') {
-        return wildcard_match(path, pattern);
+    if has_glob_syntax(pattern) {
+        return Glob::new(pattern)
+            .map(|glob| glob.compile_matcher().is_match(path))
+            .unwrap_or_else(|_| wildcard_match(path, pattern));
     }
     path == pattern || path.starts_with(&format!("{pattern}/"))
+}
+
+fn has_glob_syntax(value: &str) -> bool {
+    value.chars().any(|ch| matches!(ch, '*' | '?' | '[' | '{'))
 }
 
 fn wildcard_match(text: &str, pattern: &str) -> bool {
@@ -893,10 +1342,7 @@ pub fn has_git_directory() -> bool {
 }
 
 pub fn git_remote_platform() -> Option<String> {
-    let output = Command::new("git")
-        .args(["remote", "-v"])
-        .output()
-        .ok()?;
+    let output = Command::new("git").args(["remote", "-v"]).output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -948,71 +1394,211 @@ pub fn default_monitored_paths() -> Vec<String> {
     paths
 }
 
+pub fn default_ignored_paths() -> Vec<String> {
+    vec![
+        "target/**".to_string(),
+        ".git/**".to_string(),
+        "docs/assets/**".to_string(),
+    ]
+}
+
 pub fn git_hooks_path() -> PathBuf {
     Path::new(".git").join("hooks")
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SentinelChangedFile {
+    pub path: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub points: u32,
+    pub monitored: bool,
+    pub ignored: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SentinelCheckResult {
     pub bypassed: bool,
+    pub base: String,
     pub changed_files: usize,
     pub decision_found: bool,
+    pub requires_decision: bool,
+    pub threshold: u32,
+    pub score: u32,
+    pub missing_decision: bool,
+    pub files: Vec<SentinelChangedFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigValidationReport {
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult, io::Error> {
     let config = load_runtime_config();
-    let monitored = config.monitored_paths;
-    let scoring = config.scoring;
+    let monitored = config.monitored_paths.clone();
+    let ignored = config.ignored_paths.clone();
+    let scoring = config.scoring.clone();
     let threshold = config.threshold;
 
-    let latest_message = git_head_message().unwrap_or_default();
-    let lower = latest_message.to_lowercase();
-    if lower.contains("[skip fence]") || lower.contains("nolog") {
-        return Ok(SentinelCheckResult {
-            bypassed: true,
-            changed_files: 0,
-            decision_found: true,
-        });
+    let validation = validate_config(&config);
+    if !validation.errors.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            validation.errors.join("; "),
+        ));
     }
 
     let base = base_branch
         .or_else(git_base_branch)
         .unwrap_or_else(|| "HEAD~1".to_string());
 
-    let diff_files = git_diff_files(&base)?;
-    let monitored_changes: Vec<String> = diff_files
+    let latest_message = git_head_message().unwrap_or_default();
+    let lower = latest_message.to_lowercase();
+    if lower.contains("[skip fence]") || lower.contains("nolog") {
+        return Ok(SentinelCheckResult {
+            bypassed: true,
+            base,
+            changed_files: 0,
+            decision_found: true,
+            requires_decision: false,
+            threshold,
+            score: 0,
+            missing_decision: false,
+            files: Vec::new(),
+        });
+    }
+
+    let raw_stats = git_diff_stats(&base)?;
+    let files = raw_stats
+        .into_iter()
+        .map(|stat| {
+            let ignored = is_ignored_path(&stat.path, &ignored);
+            SentinelChangedFile {
+                points: if ignored {
+                    0
+                } else {
+                    weighted_score_for_file(&stat.path, &scoring)
+                },
+                monitored: !ignored && is_monitored_path(&stat.path, &monitored),
+                ignored,
+                path: stat.path,
+                additions: stat.additions,
+                deletions: stat.deletions,
+            }
+        })
+        .collect::<Vec<_>>();
+    let score = files.iter().map(|file| file.points).sum::<u32>();
+    let monitored_changes = files
         .iter()
-        .filter(|path| is_monitored_path(path, &monitored))
-        .cloned()
-        .collect();
-    let (score, scored_files) = compute_weighted_score(&diff_files, &scoring);
+        .filter(|file| file.monitored && !file.ignored)
+        .count();
+    let scored_files = files
+        .iter()
+        .filter(|file| file.points > 0 && !file.ignored)
+        .count();
 
     let requires_decision = if !scoring.is_empty() && threshold > 0 {
         score > threshold
     } else {
-        !monitored_changes.is_empty()
+        monitored_changes > 0
     };
+    let decision_found = files
+        .iter()
+        .any(|file| file.path.starts_with(&format!("{DECISION_DIR}/")));
 
     if !requires_decision {
         return Ok(SentinelCheckResult {
             bypassed: false,
+            base,
             changed_files: 0,
-            decision_found: true,
+            decision_found,
+            requires_decision,
+            threshold,
+            score,
+            missing_decision: false,
+            files,
         });
     }
 
-    let decision_found = diff_files
-        .iter()
-        .any(|path| path.starts_with(&format!("{DECISION_DIR}/")));
+    let changed_files = if !scoring.is_empty() {
+        scored_files
+    } else {
+        monitored_changes
+    };
 
     Ok(SentinelCheckResult {
         bypassed: false,
-        changed_files: if !scoring.is_empty() {
-            scored_files
-        } else {
-            monitored_changes.len()
-        },
+        base,
+        changed_files,
         decision_found,
+        requires_decision,
+        threshold,
+        score,
+        missing_decision: !decision_found,
+        files,
     })
+}
+
+pub fn sentinel_explain(base_branch: Option<String>) -> Result<SentinelCheckResult, io::Error> {
+    sentinel_check(base_branch)
+}
+
+pub fn validate_config(config: &FenceConfig) -> ConfigValidationReport {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    if config.monitored_paths.is_empty() && config.scoring.is_empty() {
+        warnings.push("no monitored_paths or scoring rules configured".to_string());
+    }
+
+    for path in &config.monitored_paths {
+        if path.trim().is_empty() {
+            errors.push("monitored_paths contains an empty entry".to_string());
+            continue;
+        }
+        if has_glob_syntax(path) {
+            if let Err(err) = Glob::new(path) {
+                errors.push(format!("invalid monitored path glob '{path}': {err}"));
+            }
+        } else if !Path::new(path).exists() {
+            warnings.push(format!("monitored path '{path}' does not exist yet"));
+        }
+    }
+
+    for path in &config.ignored_paths {
+        if path.trim().is_empty() {
+            errors.push("ignored_paths contains an empty entry".to_string());
+            continue;
+        }
+        if has_glob_syntax(path)
+            && let Err(err) = Glob::new(path)
+        {
+            errors.push(format!("invalid ignored path glob '{path}': {err}"));
+        }
+    }
+
+    for (pattern, points) in &config.scoring {
+        if pattern.trim().is_empty() {
+            errors.push("scoring contains an empty pattern".to_string());
+        }
+        if *points == 0 {
+            warnings.push(format!("scoring pattern '{pattern}' has zero points"));
+        }
+        if has_glob_syntax(pattern)
+            && let Err(err) = Glob::new(pattern)
+        {
+            errors.push(format!("invalid scoring glob '{pattern}': {err}"));
+        }
+    }
+
+    ConfigValidationReport {
+        valid: errors.is_empty(),
+        errors,
+        warnings,
+    }
 }
 
 pub fn ensure_gitignore_contains(entry: &str) -> Result<(), io::Error> {
@@ -1074,7 +1660,10 @@ pub fn install_pre_commit_hook(hooks_dir: &Path) -> Result<(), io::Error> {
 pub fn default_project_name() -> String {
     std::env::current_dir()
         .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "fence-project".to_string())
 }
@@ -1180,6 +1769,7 @@ fn ensure_hook_is_executable(_path: &Path) -> Result<(), io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{UnwindSafe, catch_unwind, resume_unwind};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1192,6 +1782,27 @@ mod tests {
             .as_nanos();
 
         std::env::temp_dir().join(format!("fence-{name}-{unique}"))
+    }
+
+    fn with_temp_cwd<T, F>(name: &str, test: F) -> T
+    where
+        F: FnOnce() -> T + UnwindSafe,
+    {
+        let _guard = TEST_MUTEX.lock().expect("should lock test mutex");
+        let original_dir = std::env::current_dir().expect("should read current dir");
+        let temp_dir = temp_path(name);
+        fs::create_dir_all(&temp_dir).expect("should create temp cwd");
+        std::env::set_current_dir(&temp_dir).expect("should switch to temp cwd");
+
+        let result = catch_unwind(test);
+
+        std::env::set_current_dir(original_dir).expect("should restore cwd");
+        fs::remove_dir_all(temp_dir).ok();
+
+        match result {
+            Ok(value) => value,
+            Err(payload) => resume_unwind(payload),
+        }
     }
 
     #[test]
@@ -1237,9 +1848,7 @@ mod tests {
                 webhook_url: Some("https://hooks.slack.test".to_string()),
                 custom_command: None,
             }),
-            Some(TeamSettings {
-                jira_domain: None,
-            }),
+            Some(TeamSettings { jira_domain: None }),
         );
 
         write_config(&path, &config).expect("should write config");
@@ -1272,14 +1881,23 @@ mod tests {
             status: DecisionStatus::Accepted,
             review_due: "2027-04-14T12:00:00+00:00".to_string(),
             supersedes: None,
+
             superseded_by: None,
+            title: None,
+            rationale: None,
+            consequences: None,
+            links: Vec::new(),
+            owner: None,
+            reviewer: None,
         };
 
         append_markdown_row(&path, &entry).expect("should append markdown row");
 
         let content = fs::read_to_string(&path).expect("should read markdown file");
         assert!(content.starts_with(DECISIONS_MD_HEADER));
-        assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship A \\| B test | ✅ Decided |"));
+        assert!(
+            content.contains("| 2026-04-14 12:00:00 | praj | Ship A \\| B test | ✅ Decided |")
+        );
 
         fs::remove_file(path).ok();
     }
@@ -1308,7 +1926,14 @@ mod tests {
             status: DecisionStatus::Accepted,
             review_due: "2027-04-14T12:00:00+00:00".to_string(),
             supersedes: None,
+
             superseded_by: None,
+            title: None,
+            rationale: None,
+            consequences: None,
+            links: Vec::new(),
+            owner: None,
+            reviewer: None,
         };
         let line = serde_json::to_string(&entry).expect("should serialize");
         let parsed = parse_log_line(&line).expect("should parse json");
@@ -1316,51 +1941,117 @@ mod tests {
     }
 
     #[test]
+    fn parse_log_line_reads_timestamp_without_author() {
+        let entry = parse_log_line("[2026-04-14 12:00:00] Ship it").expect("should parse log line");
+
+        assert_eq!(entry.timestamp, "2026-04-14 12:00:00");
+        assert_eq!(entry.message, "Ship it");
+        assert_eq!(entry.category, DecisionCategory::General);
+    }
+
+    #[test]
+    fn migrate_legacy_log_converts_old_lines_to_decision_files() {
+        with_temp_cwd("migrate-legacy", || {
+            let legacy_path = temp_path("legacy-log");
+            fs::write(
+                &legacy_path,
+                "Plain early decision\n[2026-04-14 12:00:00] Timestamp-only decision\n[2026-04-15 12:00:00] (praj) Attributed decision\n",
+            )
+            .expect("should write legacy log");
+
+            let report =
+                migrate_legacy_log(&legacy_path, false).expect("should migrate legacy log");
+            let entries = read_decision_entries().expect("should read migrated entries");
+
+            assert_eq!(report.scanned, 3);
+            assert_eq!(report.migrated, 3);
+            assert_eq!(entries.len(), 3);
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.message == "Plain early decision")
+            );
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.message == "Timestamp-only decision")
+            );
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.message == "Attributed decision")
+            );
+
+            fs::remove_file(legacy_path).ok();
+        });
+    }
+
+    #[test]
     fn export_markdown_from_log_regenerates_table() {
-        let _guard = TEST_MUTEX.lock().expect("should lock test mutex");
-        let md_path = temp_path("export-md");
-        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
+        with_temp_cwd("export-md-cwd", || {
+            let md_path = temp_path("export-md");
+            fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
 
-        let first = Decision {
-            id: "abc12345".to_string(),
-            timestamp: "2026-04-14 12:00:00".to_string(),
-            author: "praj".to_string(),
-            branch: "main".to_string(),
-            message: "Ship it".to_string(),
-            category: DecisionCategory::General,
-            optional_tags: Vec::new(),
-            status: DecisionStatus::Accepted,
-            review_due: "2027-04-14T12:00:00+00:00".to_string(),
-            supersedes: None,
-            superseded_by: None,
-        };
-        let second = Decision {
-            id: "def67890".to_string(),
-            timestamp: "2026-04-15 08:00:00".to_string(),
-            author: "lex".to_string(),
-            branch: "main".to_string(),
-            message: "Use A | B".to_string(),
-            category: DecisionCategory::General,
-            optional_tags: Vec::new(),
-            status: DecisionStatus::Accepted,
-            review_due: "2027-04-15T08:00:00+00:00".to_string(),
-            supersedes: None,
-            superseded_by: None,
-        };
-        write_decision_at_path(&decisions_dir().join("20260414120000_abc12345.json"), &first)
+            let first = Decision {
+                id: "abc12345".to_string(),
+                timestamp: "2026-04-14 12:00:00".to_string(),
+                author: "praj".to_string(),
+                branch: "main".to_string(),
+                message: "Ship it".to_string(),
+                category: DecisionCategory::General,
+                optional_tags: Vec::new(),
+                status: DecisionStatus::Accepted,
+                review_due: "2027-04-14T12:00:00+00:00".to_string(),
+                supersedes: None,
+
+                superseded_by: None,
+                title: None,
+                rationale: None,
+                consequences: None,
+                links: Vec::new(),
+                owner: None,
+                reviewer: None,
+            };
+            let second = Decision {
+                id: "def67890".to_string(),
+                timestamp: "2026-04-15 08:00:00".to_string(),
+                author: "lex".to_string(),
+                branch: "main".to_string(),
+                message: "Use A | B".to_string(),
+                category: DecisionCategory::General,
+                optional_tags: Vec::new(),
+                status: DecisionStatus::Accepted,
+                review_due: "2027-04-15T08:00:00+00:00".to_string(),
+                supersedes: None,
+
+                superseded_by: None,
+                title: None,
+                rationale: None,
+                consequences: None,
+                links: Vec::new(),
+                owner: None,
+                reviewer: None,
+            };
+            write_decision_at_path(
+                &decisions_dir().join("20260414120000_abc12345.json"),
+                &first,
+            )
             .expect("should write decision");
-        write_decision_at_path(&decisions_dir().join("20260415080000_def67890.json"), &second)
+            write_decision_at_path(
+                &decisions_dir().join("20260415080000_def67890.json"),
+                &second,
+            )
             .expect("should write decision");
 
-        export_markdown_from_log(&md_path).expect("should export markdown");
+            export_markdown_from_log(&md_path).expect("should export markdown");
 
-        let content = fs::read_to_string(&md_path).expect("should read markdown");
-        assert!(content.starts_with(DECISIONS_MD_HEADER));
-        assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship it | Accepted |"));
-        assert!(content.contains("| 2026-04-15 08:00:00 | lex | Use A \\| B | Accepted |"));
+            let content = fs::read_to_string(&md_path).expect("should read markdown");
+            assert!(content.starts_with(DECISIONS_MD_HEADER));
+            assert!(content.contains("| 2026-04-14 12:00:00 | praj | Ship it | Accepted |"));
+            assert!(content.contains("| 2026-04-15 08:00:00 | lex | Use A \\| B | Accepted |"));
 
-        fs::remove_dir_all(decisions_dir()).ok();
-        fs::remove_file(md_path).ok();
+            fs::remove_file(md_path).ok();
+        });
     }
 
     #[test]
@@ -1400,7 +2091,14 @@ mod tests {
                 status: DecisionStatus::Accepted,
                 review_due: "2027-04-14T12:00:00+00:00".to_string(),
                 supersedes: None,
+
                 superseded_by: None,
+                title: None,
+                rationale: None,
+                consequences: None,
+                links: Vec::new(),
+                owner: None,
+                reviewer: None,
             },
         )
         .expect("should write decision");
@@ -1417,7 +2115,14 @@ mod tests {
                 status: DecisionStatus::Accepted,
                 review_due: "2027-04-15T12:00:00+00:00".to_string(),
                 supersedes: None,
+
                 superseded_by: None,
+                title: None,
+                rationale: None,
+                consequences: None,
+                links: Vec::new(),
+                owner: None,
+                reviewer: None,
             },
         )
         .expect("should write decision");
@@ -1445,87 +2150,109 @@ mod tests {
 
     #[test]
     fn deprecate_decision_updates_status_and_markdown() {
-        let _guard = TEST_MUTEX.lock().expect("should lock test mutex");
-        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
-        let path = decisions_dir().join("20260414120000_deadbeef.json");
-        let entry = Decision {
-            id: "deadbeef".to_string(),
-            timestamp: "2026-04-14 12:00:00".to_string(),
-            author: "praj".to_string(),
-            branch: "main".to_string(),
-            message: "Legacy deployment flow".to_string(),
-            category: DecisionCategory::Technical,
-            optional_tags: vec!["deploy".to_string()],
-            status: DecisionStatus::Accepted,
-            review_due: "2027-04-14T12:00:00+00:00".to_string(),
-            supersedes: None,
-            superseded_by: None,
-        };
-        write_decision_at_path(&path, &entry).expect("should write decision");
+        with_temp_cwd("deprecate-cwd", || {
+            fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
+            let path = decisions_dir().join("20260414120000_deadbeef.json");
+            let entry = Decision {
+                id: "deadbeef".to_string(),
+                timestamp: "2026-04-14 12:00:00".to_string(),
+                author: "praj".to_string(),
+                branch: "main".to_string(),
+                message: "Legacy deployment flow".to_string(),
+                category: DecisionCategory::Technical,
+                optional_tags: vec!["deploy".to_string()],
+                status: DecisionStatus::Accepted,
+                review_due: "2027-04-14T12:00:00+00:00".to_string(),
+                supersedes: None,
 
-        let deprecated = deprecate_decision("deadbeef").expect("should deprecate decision");
-        assert!(deprecated);
+                superseded_by: None,
+                title: None,
+                rationale: None,
+                consequences: None,
+                links: Vec::new(),
+                owner: None,
+                reviewer: None,
+            };
+            write_decision_at_path(&path, &entry).expect("should write decision");
 
-        let stored = find_decision_file("deadbeef")
-            .expect("should read decision")
-            .expect("decision should exist")
-            .decision;
-        assert_eq!(stored.status, DecisionStatus::Deprecated);
+            let deprecated = deprecate_decision("deadbeef").expect("should deprecate decision");
+            assert!(deprecated);
 
-        let markdown =
-            fs::read_to_string(DEFAULT_DECISIONS_MD_PATH).expect("should rewrite markdown export");
-        assert!(markdown.contains("| 2026-04-14 12:00:00 | praj | Legacy deployment flow | Deprecated |"));
+            let stored = find_decision_file("deadbeef")
+                .expect("should read decision")
+                .expect("decision should exist")
+                .decision;
+            assert_eq!(stored.status, DecisionStatus::Deprecated);
 
-        fs::remove_dir_all(decisions_dir()).ok();
-        fs::remove_file(DEFAULT_DECISIONS_MD_PATH).ok();
+            let markdown = fs::read_to_string(DEFAULT_DECISIONS_MD_PATH)
+                .expect("should rewrite markdown export");
+            assert!(
+                markdown.contains(
+                    "| 2026-04-14 12:00:00 | praj | Legacy deployment flow | Deprecated |"
+                )
+            );
+        });
     }
 
     #[test]
     fn supersede_decision_marks_old_entry_and_links_replacement() {
-        let _guard = TEST_MUTEX.lock().expect("should lock test mutex");
-        fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
-        let old_path = decisions_dir().join("20260414120000_old12345.json");
-        let new_path = decisions_dir().join("20260415120000_new12345.json");
-        let old = Decision {
-            id: "old12345".to_string(),
-            timestamp: "2026-04-14 12:00:00".to_string(),
-            author: "praj".to_string(),
-            branch: "main".to_string(),
-            message: "Use legacy queue".to_string(),
-            category: DecisionCategory::Architecture,
-            optional_tags: vec!["queue".to_string()],
-            status: DecisionStatus::Accepted,
-            review_due: "2027-04-14T12:00:00+00:00".to_string(),
-            supersedes: None,
-            superseded_by: None,
-        };
-        let replacement = Decision {
-            id: "new12345".to_string(),
-            timestamp: "2026-04-15 12:00:00".to_string(),
-            author: "praj".to_string(),
-            branch: "main".to_string(),
-            message: "Use durable queue".to_string(),
-            category: DecisionCategory::Architecture,
-            optional_tags: vec!["queue".to_string(), "durable".to_string()],
-            status: DecisionStatus::Accepted,
-            review_due: "2027-04-15T12:00:00+00:00".to_string(),
-            supersedes: Some("old12345".to_string()),
-            superseded_by: None,
-        };
-        write_decision_at_path(&old_path, &old).expect("should write old decision");
-        write_decision_at_path(&new_path, &replacement).expect("should write replacement");
+        with_temp_cwd("supersede-cwd", || {
+            fs::create_dir_all(decisions_dir()).expect("should create decisions dir");
+            let old_path = decisions_dir().join("20260414120000_old12345.json");
+            let new_path = decisions_dir().join("20260415120000_new12345.json");
+            let old = Decision {
+                id: "old12345".to_string(),
+                timestamp: "2026-04-14 12:00:00".to_string(),
+                author: "praj".to_string(),
+                branch: "main".to_string(),
+                message: "Use legacy queue".to_string(),
+                category: DecisionCategory::Architecture,
+                optional_tags: vec!["queue".to_string()],
+                status: DecisionStatus::Accepted,
+                review_due: "2027-04-14T12:00:00+00:00".to_string(),
+                supersedes: None,
 
-        let superseded =
-            supersede_decision("old12345", "new12345").expect("should supersede decision");
-        assert!(superseded);
+                superseded_by: None,
+                title: None,
+                rationale: None,
+                consequences: None,
+                links: Vec::new(),
+                owner: None,
+                reviewer: None,
+            };
+            let replacement = Decision {
+                id: "new12345".to_string(),
+                timestamp: "2026-04-15 12:00:00".to_string(),
+                author: "praj".to_string(),
+                branch: "main".to_string(),
+                message: "Use durable queue".to_string(),
+                category: DecisionCategory::Architecture,
+                optional_tags: vec!["queue".to_string(), "durable".to_string()],
+                status: DecisionStatus::Accepted,
+                review_due: "2027-04-15T12:00:00+00:00".to_string(),
+                supersedes: Some("old12345".to_string()),
 
-        let stored = find_decision_file("old12345")
-            .expect("should read decision")
-            .expect("decision should exist")
-            .decision;
-        assert_eq!(stored.status, DecisionStatus::Superseded);
-        assert_eq!(stored.superseded_by.as_deref(), Some("new12345"));
+                superseded_by: None,
+                title: None,
+                rationale: None,
+                consequences: None,
+                links: Vec::new(),
+                owner: None,
+                reviewer: None,
+            };
+            write_decision_at_path(&old_path, &old).expect("should write old decision");
+            write_decision_at_path(&new_path, &replacement).expect("should write replacement");
 
-        fs::remove_dir_all(decisions_dir()).ok();
+            let superseded =
+                supersede_decision("old12345", "new12345").expect("should supersede decision");
+            assert!(superseded);
+
+            let stored = find_decision_file("old12345")
+                .expect("should read decision")
+                .expect("decision should exist")
+                .decision;
+            assert_eq!(stored.status, DecisionStatus::Superseded);
+            assert_eq!(stored.superseded_by.as_deref(), Some("new12345"));
+        });
     }
 }
