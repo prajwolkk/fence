@@ -25,6 +25,9 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             asset_name: fence-aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: fence-x86_64-pc-windows-msvc
 
     steps:
       - name: Checkout
@@ -38,7 +41,8 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package Unix
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p dist
@@ -46,13 +50,21 @@ jobs:
           tar -C dist -czf ${{ matrix.asset_name }}.tar.gz fence
           shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
 
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/fence.exe" "dist/fence.exe"
+          Compress-Archive -Path "dist/fence.exe" -DestinationPath "${{ matrix.asset_name }}.zip" -Force
+          $hash = (Get-FileHash "${{ matrix.asset_name }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset_name }}.zip" | Out-File -Encoding ascii "${{ matrix.asset_name }}.zip.sha256"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: |
-            ${{ matrix.asset_name }}.tar.gz
-            ${{ matrix.asset_name }}.tar.gz.sha256
+          path: ${{ matrix.asset_name }}.*
 
   publish:
     name: Publish GitHub release
