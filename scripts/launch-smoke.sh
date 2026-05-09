@@ -117,6 +117,9 @@ step "checking repository starts clean"
 if [[ "${FENCE_SMOKE_ALLOW_DIRTY:-0}" != "1" ]]; then
   [[ -z "$(git -C "${ROOT}" status --short)" ]] || fail "repository is not clean before launch smoke"
 fi
+[[ -f "${ROOT}/AGENTS.md" ]] || fail "AGENTS.md is missing"
+[[ -f "${ROOT}/CLAUDE.md" ]] || fail "CLAUDE.md is missing"
+[[ -f "${ROOT}/.cursor/rules/fence.mdc" ]] || fail "Cursor rules are missing"
 
 step "running Rust quality gates"
 (cd "${ROOT}" && cargo fmt --check)
@@ -258,6 +261,10 @@ pub fn worker_threads() -> usize {
 }
 EOF
   git add Cargo.toml src/lib.rs
+  if "${FENCE}" agent-check --staged >/tmp/fence-smoke-agent-staged.txt 2>&1; then
+    fail "agent-check --staged should block staged architectural changes without a decision"
+  fi
+  require_contains "$(cat /tmp/fence-smoke-agent-staged.txt)" "Agent preflight blocked"
   git commit -m "Change runtime dependency" >/dev/null
   if "${FENCE}" sentinel check --base HEAD~1 >/tmp/fence-smoke-sentinel.txt 2>&1; then
     fail "Sentinel should block an architectural change without a decision"
@@ -281,8 +288,10 @@ EOF
     --owner @platform \
     --reviewer @security
   git add .fence/decisions DECISIONS.md
+  require_contains "$("${FENCE}" agent-check --staged)" "Agent preflight passed"
   git commit -m "Record runtime decision" >/dev/null
   require_contains "$("${FENCE}" sentinel check --base HEAD~2)" "Decision: found"
+  require_contains "$("${FENCE}" agent-check --base HEAD~2)" "Agent preflight passed"
   json_assert "$("${FENCE}" sentinel check --base HEAD~2 --json)" "data['decision_found'] is True"
   require_contains "$("${FENCE}" sentinel check --base no-such-ref)" "No monitored changes detected"
 )

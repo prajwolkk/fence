@@ -111,6 +111,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    AgentCheck {
+        #[arg(long, conflicts_with = "staged")]
+        base: Option<String>,
+        #[arg(long)]
+        staged: bool,
+        #[arg(long, conflicts_with = "markdown")]
+        json: bool,
+        #[arg(long)]
+        markdown: bool,
+    },
     Check,
     Export,
     Migrate {
@@ -313,6 +323,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else {
                 print_ask_results(&query, &results);
             }
+        }
+        Commands::AgentCheck {
+            base,
+            staged,
+            json,
+            markdown,
+        } => {
+            run_agent_check(base, staged, json, markdown)?;
         }
         Commands::Check => {
             let sync = fence::sync_status()?;
@@ -1044,6 +1062,47 @@ fn print_ask_results(query: &str, results: &[AskDecisionResult]) {
             println!("Rationale: {rationale}");
         }
     }
+}
+
+fn run_agent_check(
+    base: Option<String>,
+    staged: bool,
+    json: bool,
+    markdown: bool,
+) -> Result<(), Box<dyn Error>> {
+    if !has_git_directory() {
+        println!("Agent check requires a Git repository. Please run git init first.");
+        process::exit(1);
+    }
+
+    let result = if staged {
+        fence::sentinel_check_staged()?
+    } else {
+        fence::sentinel_check(base)?
+    };
+
+    if json {
+        print_json(&result)?;
+    } else if markdown {
+        println!("{}", sentinel_markdown_report(&result));
+    } else {
+        print_sentinel_report(&result);
+        if result.missing_decision {
+            println!();
+            println!(
+                "Agent preflight blocked: inspect existing decisions with `fence ask <topic>` or record intent with `fence log`."
+            );
+        } else {
+            println!();
+            println!("Agent preflight passed.");
+        }
+    }
+
+    if result.missing_decision {
+        process::exit(1);
+    }
+
+    Ok(())
 }
 
 fn parse_category(value: Option<String>) -> fence::DecisionCategory {

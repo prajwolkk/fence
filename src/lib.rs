@@ -1270,6 +1270,36 @@ fn git_diff_stats(base: &str) -> Result<Vec<GitDiffStat>, io::Error> {
         .collect())
 }
 
+fn git_diff_stats_staged() -> Result<Vec<GitDiffStat>, io::Error> {
+    let output = Command::new("git")
+        .args(["diff", "--cached", "--numstat"])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let additions = parts.next()?.parse::<u32>().unwrap_or(0);
+            let deletions = parts.next()?.parse::<u32>().unwrap_or(0);
+            let path = parts.next()?.trim().to_string();
+            if path.is_empty() {
+                None
+            } else {
+                Some(GitDiffStat {
+                    path,
+                    additions,
+                    deletions,
+                })
+            }
+        })
+        .collect())
+}
+
 fn is_monitored_path(path: &str, monitored: &[String]) -> bool {
     monitored.iter().any(|entry| {
         if entry.is_empty() {
@@ -1544,6 +1574,79 @@ pub fn sentinel_check(base_branch: Option<String>) -> Result<SentinelCheckResult
 
 pub fn sentinel_explain(base_branch: Option<String>) -> Result<SentinelCheckResult, io::Error> {
     sentinel_check(base_branch)
+}
+
+pub fn sentinel_check_staged() -> Result<SentinelCheckResult, io::Error> {
+    let config = load_runtime_config();
+    let validation = validate_config(&config);
+    if !validation.errors.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            validation.errors.join("; "),
+        ));
+    }
+
+    let monitored = config.monitored_paths.clone();
+    let ignored = config.ignored_paths.clone();
+    let scoring = config.scoring.clone();
+    let threshold = config.threshold;
+    let raw_stats = git_diff_stats_staged()?;
+    let files = raw_stats
+        .into_iter()
+        .map(|stat| {
+            let ignored = is_ignored_path(&stat.path, &ignored);
+            SentinelChangedFile {
+                points: if ignored {
+                    0
+                } else {
+                    weighted_score_for_file(&stat.path, &scoring)
+                },
+                monitored: !ignored && is_monitored_path(&stat.path, &monitored),
+                ignored,
+                path: stat.path,
+                additions: stat.additions,
+                deletions: stat.deletions,
+            }
+        })
+        .collect::<Vec<_>>();
+    let score = files.iter().map(|file| file.points).sum::<u32>();
+    let monitored_changes = files
+        .iter()
+        .filter(|file| file.monitored && !file.ignored)
+        .count();
+    let scored_files = files
+        .iter()
+        .filter(|file| file.points > 0 && !file.ignored)
+        .count();
+    let requires_decision = if !scoring.is_empty() && threshold > 0 {
+        score > threshold
+    } else {
+        monitored_changes > 0
+    };
+    let decision_found = files
+        .iter()
+        .any(|file| file.path.starts_with(&format!("{DECISION_DIR}/")));
+    let changed_files = if requires_decision {
+        if !scoring.is_empty() {
+            scored_files
+        } else {
+            monitored_changes
+        }
+    } else {
+        0
+    };
+
+    Ok(SentinelCheckResult {
+        bypassed: false,
+        base: "staged".to_string(),
+        changed_files,
+        decision_found,
+        requires_decision,
+        threshold,
+        score,
+        missing_decision: requires_decision && !decision_found,
+        files,
+    })
 }
 
 pub fn validate_config(config: &FenceConfig) -> ConfigValidationReport {
